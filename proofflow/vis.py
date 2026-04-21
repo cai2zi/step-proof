@@ -138,7 +138,7 @@ def create_static_visualization(G, node_info, filename='proof_graph.png', dpi: i
     plt.tight_layout()
     plt.savefig(filename, dpi=dpi, bbox_inches='tight')
     print(f"Static visualization saved as {filename}")
-    plt.show()
+    plt.close()
 
 
 def create_interactive_visualization(G, node_info, proof_str="", filename='proof_graph_interactive.html'):

@@ -63,18 +63,9 @@ setup(
             "notebook>=6.4.0",
         ],
     },
-    entry_points={
-        "console_scripts": [
-            "proofflow=proofflow.cli:main",
-        ],
-    },
     include_package_data=True,
     package_data={
-        "proofflow": [
-            "prompts/*.md",
-            "data/*.json",
-            "data/*.xlsx",
-        ],
+        "proofflow": [],
     },
     keywords=[
         "mathematics",
