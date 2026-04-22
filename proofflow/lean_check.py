@@ -1,7 +1,9 @@
 import ast
+import asyncio
 import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
 from kimina_client import (
@@ -157,6 +159,34 @@ def process_lean_string(lean_string: str):
 # same thing for this open BigOperators Real Nat Topology Rat
 
 
+def _analyze_lean_output(output: str):
+    error_patterns = [
+        r'"severity"\s*:\s*"error"',
+        r"'severity'\s*:\s*'error'",
+    ]
+
+    lean_pass = not any(re.search(pattern, output) for pattern in error_patterns)
+    lean_verify = lean_pass and not any(
+        [
+            "declaration uses 'sorry'" in output,
+            'declaration uses "sorry"' in output,
+            "failed" in output,
+        ]
+    )
+    return lean_pass, lean_verify
+
+
+def _build_temp_file_path(
+    project_path: str,
+    temp_root: str | None = None,
+    job_id: str | None = None,
+) -> Path:
+    temp_dir = Path(temp_root) if temp_root else (Path(project_path) / "temp" / "lean_jobs")
+    os.makedirs(temp_dir, exist_ok=True)
+    unique_id = job_id or uuid.uuid4().hex
+    return temp_dir / f"{unique_id}.lean"
+
+
 def verify_lean_lemma_server(
     lean_string: str, client: KiminaClient, add_imports=False, timeout: int = 180
 ):
@@ -204,16 +234,22 @@ def verify_lean_lemma_server(
 
 
 def verify_lean_lemma_local(
-    lean_string: str, project_path: str, add_imports=False, timeout: int = 180
+    lean_string: str,
+    project_path: str,
+    add_imports=False,
+    timeout: int = 180,
+    temp_root: str | None = None,
+    job_id: str | None = None,
 ):
     """
     Verifies a single Lean lemma or theorem using the `lean` executable.
     (Function body as provided in the user's prompt)
     """
-    # Create a temporary directory and file
-    temp_dir = Path(project_path) / "temp"
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_file_path = temp_dir / f"temp.lean"
+    temp_file_path = _build_temp_file_path(
+        project_path=project_path,
+        temp_root=temp_root,
+        job_id=job_id,
+    )
     full_code = f"{LEAN_LIBRARIES}\n\n{lean_string}" if add_imports else lean_string
 
     try:
@@ -245,22 +281,7 @@ def verify_lean_lemma_local(
         # Parse the output
         output = result.stdout
 
-        # Check for errors
-        error_patterns = [
-            r'"severity"\s*:\s*"error"',  # Double quotes with optional spaces
-            r"'severity'\s*:\s*'error'",  # Single quotes with optional spaces
-        ]
-
-        lean_pass = not any(re.search(pattern, output) for pattern in error_patterns)
-
-        # Check for verification (no errors, no sorries, no failures)
-        lean_verify = lean_pass and not any(
-            [
-                "declaration uses 'sorry'" in output,
-                'declaration uses "sorry"' in output,
-                "failed" in output,
-            ]
-        )
+        lean_pass, lean_verify = _analyze_lean_output(output)
 
         return lean_pass, lean_verify, output
 
@@ -275,6 +296,66 @@ def verify_lean_lemma_local(
 
     finally:
         # 5. Clean up the temporary file
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+
+async def verify_lean_lemma_local_async(
+    lean_string: str,
+    project_path: str,
+    add_imports: bool = False,
+    timeout: int = 180,
+    temp_root: str | None = None,
+    job_id: str | None = None,
+):
+    """Asynchronously verify a Lean snippet with a unique temp file per job."""
+    temp_file_path = _build_temp_file_path(
+        project_path=project_path,
+        temp_root=temp_root,
+        job_id=job_id,
+    )
+    full_code = f"{LEAN_LIBRARIES}\n\n{lean_string}" if add_imports else lean_string
+
+    try:
+        temp_file_path.write_text(full_code, encoding="utf-8")
+
+        proc = await asyncio.create_subprocess_exec(
+            "lake",
+            "env",
+            "lean",
+            str(temp_file_path),
+            "--json",
+            cwd=project_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0 and not stdout_text.strip():
+            return (
+                False,
+                False,
+                f"Process failed with exit code {proc.returncode}: {stderr_text.strip()}",
+            )
+
+        if not stdout_text.strip():
+            return True, True, None
+
+        lean_pass, lean_verify = _analyze_lean_output(stdout_text)
+        return lean_pass, lean_verify, stdout_text
+    except FileNotFoundError:
+        return (
+            False,
+            False,
+            "Lean executable not found. Make sure it's in your system's PATH.",
+        )
+    except asyncio.TimeoutError:
+        return False, False, f"Verification timed out after {timeout} seconds."
+    except Exception as e:
+        return False, False, f"Verification failed with exception: {e}"
+    finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
@@ -394,3 +475,28 @@ class LeanServer:
         else:
             # This case should not be reached due to the __init__ check
             return False, False, "Error: Invalid mode. This is an internal error."
+
+    async def check_lean_string_async(
+        self,
+        lean_string: str,
+        add_imports: bool = False,
+        temp_root: str | None = None,
+        job_id: str | None = None,
+    ):
+        """Async counterpart to check_lean_string for concurrency-friendly local checks."""
+        if self.mode == "server":
+            return await asyncio.to_thread(
+                verify_lean_lemma_server,
+                lean_string=lean_string,
+                client=self.client,
+                add_imports=add_imports,
+            )
+        elif self.mode == "local":
+            return await verify_lean_lemma_local_async(
+                lean_string=lean_string,
+                project_path=self.path,
+                add_imports=add_imports,
+                temp_root=temp_root,
+                job_id=job_id,
+            )
+        return False, False, "Error: Invalid mode. This is an internal error."
