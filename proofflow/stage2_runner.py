@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import copy
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 from .lean_check import LeanServer
-from .local_vllm import LocalLLMManager
+from .llm_worker import LLMWorkerClient, LLMWorkerConfig
 from .stage2_common import (
     FORM_TERMINAL,
     NodeState,
@@ -46,6 +45,8 @@ DEFAULT_PROVER_MODEL_PATH = os.getenv(
     "PROVER_MODEL_PATH", "/data/czx/models/Goedel-Prover-V2-8B"
 )
 DEFAULT_GPUS = os.getenv("STAGE2_GPUS", os.getenv("GRAPH_GPUS", "0,1,2,3"))
+DEFAULT_FORMALIZER_GPUS = os.getenv("FORMALIZER_GPUS", "")
+DEFAULT_PROVER_GPUS = os.getenv("PROVER_GPUS", "")
 DEFAULT_FORMALIZER_TP = int(os.getenv("FORMALIZER_TP", "2"))
 DEFAULT_PROVER_TP = int(os.getenv("PROVER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
@@ -106,8 +107,8 @@ class Stage2Runner:
         self.failed_path = args.failed
         self.checkpoint_dir = args.checkpoint_dir
         self.done_ids: set[str] = set()
-        self.formalizer: Optional[LocalLLMManager] = None
-        self.prover: Optional[LocalLLMManager] = None
+        self.formalizer: Optional[LLMWorkerClient] = None
+        self.prover: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
 
     def load_records(self) -> None:
@@ -130,35 +131,68 @@ class Stage2Runner:
             if self.args.limit >= 0 and loaded >= self.args.limit:
                 break
 
+    def _resolve_stage_gpus(self) -> tuple[str, str]:
+        if self.args.formalizer_gpus and self.args.prover_gpus:
+            return self.args.formalizer_gpus, self.args.prover_gpus
+
+        all_devices = [device.strip() for device in self.args.gpus.split(",") if device.strip()]
+        total_needed = (
+            self.args.formalizer_tensor_parallel_size
+            + self.args.prover_tensor_parallel_size
+        )
+        if len(all_devices) < total_needed:
+            raise RuntimeError(
+                "Not enough GPUs in --gpus to derive formalizer/prover workers. "
+                f"Need {total_needed}, got {len(all_devices)} from {self.args.gpus!r}."
+            )
+
+        form_gpus = self.args.formalizer_gpus or ",".join(
+            all_devices[: self.args.formalizer_tensor_parallel_size]
+        )
+        prover_start = self.args.formalizer_tensor_parallel_size
+        prove_slice = all_devices[
+            prover_start : prover_start + self.args.prover_tensor_parallel_size
+        ]
+        prover_gpus = self.args.prover_gpus or ",".join(prove_slice)
+        return form_gpus, prover_gpus
+
     async def init_runtime(self) -> None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = self.args.gpus
+        formalizer_gpus, prover_gpus = self._resolve_stage_gpus()
         print(
             "[init] loading formalizer",
             self.args.formalizer_model_path,
-            f"(tp={self.args.formalizer_tensor_parallel_size}, gpus={self.args.gpus}) ...",
+            f"(tp={self.args.formalizer_tensor_parallel_size}, gpus={formalizer_gpus}) ...",
         )
-        self.formalizer = LocalLLMManager(
-            model_path=self.args.formalizer_model_path,
-            tensor_parallel_size=self.args.formalizer_tensor_parallel_size,
-            max_tokens=self.args.formalizer_max_tokens,
-            temperature=self.args.formalizer_temperature,
-            token_limit=self.args.formalizer_token_limit,
-            dtype=self.args.dtype,
-            gpu_memory_utilization=self.args.gpu_memory_utilization,
+        self.formalizer = LLMWorkerClient(
+            config=LLMWorkerConfig(
+                name="formalizer",
+                gpus=formalizer_gpus,
+                model_path=self.args.formalizer_model_path,
+                tensor_parallel_size=self.args.formalizer_tensor_parallel_size,
+                max_tokens=self.args.formalizer_max_tokens,
+                temperature=self.args.formalizer_temperature,
+                token_limit=self.args.formalizer_token_limit,
+                dtype=self.args.dtype,
+                gpu_memory_utilization=self.args.gpu_memory_utilization,
+            )
         )
         print(
             "[init] loading prover",
             self.args.prover_model_path,
-            f"(tp={self.args.prover_tensor_parallel_size}, gpus={self.args.gpus}) ...",
+            f"(tp={self.args.prover_tensor_parallel_size}, gpus={prover_gpus}) ...",
         )
-        self.prover = LocalLLMManager(
-            model_path=self.args.prover_model_path,
-            tensor_parallel_size=self.args.prover_tensor_parallel_size,
-            max_tokens=self.args.prover_max_tokens,
-            temperature=self.args.prover_temperature,
-            token_limit=self.args.prover_token_limit,
-            dtype=self.args.dtype,
-            gpu_memory_utilization=self.args.gpu_memory_utilization,
+        self.prover = LLMWorkerClient(
+            config=LLMWorkerConfig(
+                name="prover",
+                gpus=prover_gpus,
+                model_path=self.args.prover_model_path,
+                tensor_parallel_size=self.args.prover_tensor_parallel_size,
+                max_tokens=self.args.prover_max_tokens,
+                temperature=self.args.prover_temperature,
+                token_limit=self.args.prover_token_limit,
+                dtype=self.args.dtype,
+                gpu_memory_utilization=self.args.gpu_memory_utilization,
+            )
         )
         self.lean_server = LeanServer(project_path=self.args.mathlib_path)
         print("[init] stage2 runtime ready.\n")
@@ -175,7 +209,7 @@ class Stage2Runner:
     def _queue_for(self, spec: StageSpec) -> asyncio.Queue[Tuple[str, str]]:
         return getattr(self, spec.queue_attr)
 
-    def _llm_for(self, spec: StageSpec) -> Optional[LocalLLMManager]:
+    def _llm_for(self, spec: StageSpec) -> Optional[LLMWorkerClient]:
         return getattr(self, spec.llm_attr)
 
     def _build_messages_for_stage(
@@ -564,6 +598,11 @@ class Stage2Runner:
                 },
             )
             raise
+        finally:
+            if self.formalizer is not None:
+                self.formalizer.close()
+            if self.prover is not None:
+                self.prover.close()
 
         done = sum(1 for record in self.records.values() if record_terminal(record))
         print(f"\n[done] completed={done} out={self.out_path} failed={self.failed_path}")
@@ -609,6 +648,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--gpus", default=DEFAULT_GPUS)
+    parser.add_argument("--formalizer-gpus", default=DEFAULT_FORMALIZER_GPUS)
+    parser.add_argument("--prover-gpus", default=DEFAULT_PROVER_GPUS)
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--id-schema-mode", default="calc")

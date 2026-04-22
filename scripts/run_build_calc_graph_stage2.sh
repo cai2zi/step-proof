@@ -32,6 +32,8 @@ LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/calc_runs/lean_jobs}"
 
 # ── 运行时 / 调度 ────────────────────────────────────────────────────────
 GPUS="${GPUS:-4,5,6,7}"
+FORMALIZER_GPUS="${FORMALIZER_GPUS:-4,5}"
+PROVER_GPUS="${PROVER_GPUS:-6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"
 ID_SCHEMA_MODE="${ID_SCHEMA_MODE:-calc}"
@@ -65,6 +67,8 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage2.py" \
   --lean-check-concurrency "${LEAN_CHECK_CONCURRENCY}" \
   --lean-temp-dir "${LEAN_TEMP_DIR}" \
   --gpus "${GPUS}" \
+  --formalizer-gpus "${FORMALIZER_GPUS}" \
+  --prover-gpus "${PROVER_GPUS}" \
   --dtype "${DTYPE}" \
   --gpu-memory-utilization "${GPU_MEM_UTIL}" \
   --id-schema-mode "${ID_SCHEMA_MODE}" \
