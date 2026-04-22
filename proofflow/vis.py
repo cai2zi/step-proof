@@ -974,7 +974,7 @@ def create_interactive_graph_only_visualization(
     function renderInfo(nodeId) {{
       const info = nodeInfo[nodeId];
       if (!info) return;
-      const keys = ["id", "type", "node_type", "dependencies", "natural_language", "statement"];
+      const keys = ["id", "type", "node_type", "dependencies", "natural_language", "statement", "needs_verification"];
       let html = "";
       for (const k of keys) {{
         const v = info[k];

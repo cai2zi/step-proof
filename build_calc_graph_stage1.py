@@ -186,6 +186,7 @@ def _serialize_graph_nodes(
     out = []
     for item in proof_items:
         nt = getattr(item, "node_type", None)
+        nv = getattr(item, "needs_verification", None)
         out.append({
             "id": item.id,
             "role": infer_role(item.id, nt, mode=id_schema_mode),
@@ -193,6 +194,7 @@ def _serialize_graph_nodes(
             "natural_language": item.natural_language,
             "statement": item.statement,
             "dependencies": list(item.dependencies or []),
+            "needs_verification": nv,
         })
     return out
 

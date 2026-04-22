@@ -195,3 +195,4 @@ data/
 *.pid
 logs/
 **/logs/
+*.html
