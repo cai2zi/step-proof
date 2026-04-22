@@ -51,7 +51,13 @@ def extract_answer_openai(response) -> Tuple[bool, str]:
 
 
 class LLMManager:
-    """OpenAI-compatible chat API; optional system prompt file."""
+    """OpenAI-compatible chat API.
+
+    If ``system_prompt_path`` is set, its contents are prepended as a ``system`` message
+    when the outgoing ``messages`` list does not already start with ``role: system``.
+    For the prompt-template pipeline, pass ``system_prompt_path=None`` and supply
+    full ``[system, user, ...]`` messages from ``prompt_builder``.
+    """
 
     def __init__(
         self,

@@ -1,8 +1,11 @@
 import re
+from typing import List
 
 import httpx
 
 from .lean_check import LeanServer, process_lean_string
+from .node_schema import is_condition, is_context, is_final
+from .prompt_builder import TaskProfile, build_chat_messages
 from .utils import LLMManager, remove_imports
 
 
@@ -30,128 +33,113 @@ def extract_code_validate(text_input, lean_server):
     }
 
 
+def _build_dependency_sections(
+    task_profile: TaskProfile,
+    all_items: list,
+    dependencies: List[str],
+    previous_context: bool,
+) -> tuple[str, str]:
+    """
+    Returns (dependency_lean_code, dependency_context_block) for templates.
+    
+    """
+    if not previous_context or not all_items or not dependencies:
+        return "", ""
+
+    intro = (
+        f"\n\n This proof step depend on previous proof steps, namely steps {dependencies}.\n"
+        "Please make use use of their formal lean4 code, which contains relevant lean4 hypothesis and type declarations you may use:"
+    )
+    parts: List[str] = []
+    for d in all_items:
+        if d.id in dependencies:
+            parts.append("\n")
+            if (
+                hasattr(d, "formalization")
+                and d.formalization
+                and d.formalization.get("lean_code")
+                and d.formalization.get("lean_pass")
+            ):
+                parts.append(remove_imports(d.formalization["lean_code"]))
+            else:
+                parts.append(
+                    f"Dependency step {d.id} is provided in natural language: \"{d.statement}\". "
+                    f"Please formalize it as part of your current lemma's hypotheses."
+                )
+                
+    if not parts:
+        return "", ""
+
+    footer = (
+        "\nFocus on the original formalization task I gave you and use the previous Lean codes, extra context, type declarations, variables domains, etc. You can assume the information is correct. Make use of it!"
+    )
+    combined = "\n".join(parts)
+
+    return "", (intro + combined + footer).strip()
+
+
+def _build_original_proof_block(original_proof: str, supply_proof: bool) -> str:
+    if not supply_proof or not original_proof:
+        return ""
+    return (
+        "\n\n This formalization task is a proof step which is part of a larger full proof given next:\n"
+        + original_proof
+        + "\nThe full proof may contain extra missing information that you need, specially variable types and domains (e.g 'r' is real and positive). Make use of it, specially if you encounter errors."
+        "\nHowever, please focus on the original formalization task I gave you and use the previous full proof for extra context only."
+    )
+
+
 def run_formalizer_prompt(
     item: dict,
     lean_server: LeanServer,
     model_manager: LLMManager,
+    task_profile: TaskProfile = "proof",
     all_items: list = None,
     logs=None,
     max_retries: int = 3,
-    previous_context: bool = True,  # when formalizing step i provide formalized code of dependencies
-    original_proof: str = "",  # when formalizing step i provide original proof
+    previous_context: bool = True,
+    original_proof: str = "",
+    supply_proof: bool = True,
 ) -> tuple:
     """
-    Builds the prompt string for the item and calls the LLM API.
-    Uses the .md file as a system prompt.
-    If the item has dependencies, appends their filtered dicts to the prompt string.
-    Returns the parsed and validated JSON, with retry logic if validation fails.
+    Builds prompts from prompts/{proof|calc}/** templates and calls the LLM API.
     """
-
-    is_condition_or_def = item.id.startswith("tc_") or item.id.startswith(
-        "def_"
-    )  # is it theorem condition or not?
-    lemma_header = f"lemma {item.id}"
+    all_items = all_items or []
+    node_type = getattr(item, "node_type", None)
+    needs_verification = int(getattr(item, "needs_verification", 0) or 0)
+    is_condition_or_def = is_condition(item.id, node_type) or (
+        is_context(item.id, node_type) and needs_verification != 1
+    )
+    if is_final(item.id, node_type):
+        lemma_header = f"theorem {item.id}"
+    else:
+        lemma_header = f"lemma {item.id}"
     dependencies = item.dependencies
 
-    if not is_condition_or_def:
-        # Combine all parts
-        user_prompt_content = f"""Please autoformalize the following natural language problem proof step in Lean 4.
-Use the following lemma name: {lemma_header}
-The natural language statement is: {item.statement}
-The dependencies are: {dependencies}
+    dep_lean, dep_ctx = _build_dependency_sections(
+        task_profile, all_items, dependencies, previous_context
+    )
+    original_block = _build_original_proof_block(original_proof, supply_proof)
 
-This is the  lean code skeleton you need to use:
-
-```lean4
-import Mathlib
-import Aesop
-
-set_option maxHeartbeats 0
-
-open BigOperators Real Nat Topology Rat Filter
-
-{lemma_header}
-[place correct hypothesis here] :
-[place goal here] := by
-sorry
-```
-
-Important: **Please write only one lemma or theorem**!!
-"""
+    if is_condition_or_def: # 对于pc, ctx 不需要verify 这部分的message构建
+        kwargs = {
+            "node_id": item.id,
+            "statement": item.statement,
+            "dependency_context_block": dep_ctx or "",
+        }
+        if task_profile != "calc":
+            kwargs["original_proof_block"] = original_block
+        messages = build_chat_messages(task_profile, "formalize_context", **kwargs)
     else:
-        user_prompt_content = rf"""Please autoformalize the following natural language theorem condition in Lean 4.
-Use the following name: {item.id}
-
-The natural language statement is: {item.statement}
-
-These the lean code skeleton you need to use (please make needed changes and fill ????):
-
-```lean4
-import Mathlib
-import Aesop
-
-set_option maxHeartbeats 0
-
-open BigOperators Real Nat Topology Rat Filter
-
-variable [place correct hypothesis here]
-```
-
-Do not produce a theorem or a proof. Only provide the Lean 4 code.
-Warning: this is not a lemma/theorem, it is a theorem condition. For this problem make use of "variable" and follow the following examples.
-
-Name: tc\_1; Statement: Let \$(a\_n)\$ be a sequence of positive real numbers.
-Lean 4 formalization:
-
-```lean4
-variable (a : ℕ → ℝ)
-(tc_1 : ∀ n, 0 < a n)
-```
-
-Name: tc\_2; Statement: Let \$A\$ be a \$2 × 2\$ real matrix with eigenvalues \$\lambda\_1 = 3\$ and \$\lambda\_2 = -2\$.
-Lean 4 formalization:
-
-```lean4
-variable (A : Matrix (Fin 2) (Fin 2) ℝ)
-(tc_2 : ∃ v1 v2 : Fin 2 → ℝ, v1 ≠ 0 ∧ v2 ≠ 0 ∧ A.vecMul v1 = 3 • v1 ∧ A.vecMul v2 = -2 • v2)
-```"""
-    # Context can be: previous lean4 code or just goal statements and/or NL statement and/or original proof
-    if previous_context:
-        previous_context_str = [
-            f"\n\n This proof step depend on previous proof steps, namely steps {dependencies}."
-        ]
-        previous_context_str.append(
-            "Please make use use of their formal lean4 code, which contains relevant lean4 hypothesis and type declarations you may use:"
-        )
-        for d in all_items:
-            if d.id in dependencies:
-                previous_context_str.append("/n")  # Step {d.id}:")
-                if (
-                    hasattr(d, "formalization")
-                    and d.formalization
-                    and d.formalization["lean_code"]
-                    and d.formalization["lean_pass"]
-                ):  # check if lean code exists and it runs!
-                    previous_context_str.append(
-                        remove_imports(d.formalization["lean_code"])
-                    )
-                else:
-                    previous_context_str.append(
-                        f"Lean code not found or incorrect. Here is the natural language statement of step {d.id}: {d.statement}"
-                    )
-        previous_context_str.append(
-            "/n Focus on the original formalization task I gave you and use the prebious Lean codes, extra context, type declarations, variables domains, etc. You can assume the information is correct. Make use of it!"
-        )
-        previous_context_str = "/n".join(previous_context_str)
-        user_prompt_content += previous_context_str
-
-    if original_proof:
-        user_prompt_content += "\n\n This formalization task is a proof step which is part of a larger full proof given next:\n"
-        user_prompt_content += original_proof
-        user_prompt_content += "\nThe full proof may contain extra missing information that you need, specially variable types and domains (e.g 'r' is real and positive). Make use of it, specially if you encounter errors."
-        user_prompt_content += "\nHowever, please focus on the original formalization task I gave you and use the previous full proof for extra context only."
-
-    messages = [{"role": "user", "content": user_prompt_content}]
+        kwargs = {
+            "lemma_header": lemma_header,
+            "statement": item.statement,
+            "dependencies": dependencies,
+            "dependency_context_block": dep_ctx or "",
+        }
+        if task_profile != "calc":
+            kwargs["original_proof_block"] = original_block
+        messages = build_chat_messages(task_profile, "formalize_claim", **kwargs)
 
     formalization = {
         "lean_code": "",
@@ -167,24 +155,21 @@ variable (A : Matrix (Fin 2) (Fin 2) ℝ)
         except httpx.TimeoutException as e:
             print("OpenAI request failed:", e)
 
-        # Try to validate the response
         try:
             formalization = extract_code_validate(response, lean_server)
             formalization["tries"] = attempt + 1
             formalization["attempt_history"] = attempt_history
 
-            # check if lean is correct -> if yes end loop here
             if formalization["lean_pass"]:
                 return formalization
-            else:  # if not ajust prompt_str
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Lean error: "
-                        + str(formalization["error_msg"])
-                        + "\n\nBased on the error, please correct the previous response. ",
-                    }
-                )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Lean error: "
+                    + str(formalization["error_msg"])
+                    + "\n\nBased on the error, please correct the previous response. ",
+                }
+            )
 
         except ValueError as e:
             messages.append(

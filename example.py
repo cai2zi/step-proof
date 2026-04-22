@@ -27,7 +27,6 @@ graph_model = LLMManager(
         "base_url": GRAPH_BASE_URL,
         "model": "qwen3.5-9b",
     },
-    system_prompt_path="prompts/proof_graph.md",
 )
 
 # Formalization model
@@ -37,7 +36,6 @@ formalize_model = LLMManager(
         "base_url": FORMALIZER_BASE_URL,
         "model": "goedel-formalizer-v2-8b",
     },
-    system_prompt_path="prompts/lemma_formalizer.md",
 )
 
 # Solver model
@@ -47,7 +45,6 @@ solver_model = LLMManager(
         "base_url": PROVER_BASE_URL,
         "model": "goedel-prover-v2-8b",
     },
-    system_prompt_path="prompts/lemma_prover.md",
 )
 
 # Optional scoring model (disabled)
@@ -60,6 +57,7 @@ proof_flow = ProofFlow(
     solver_model_manager=solver_model,
     score_model_manager=score_model,
     verbose=True,
+    task_profile="proof",
 )
 # Process a natural language proof
 nl_proof = """
@@ -69,7 +67,9 @@ Given that x² + y² = 1, we get 1 ≥ x², which means x² ≤ 1.
 Taking the square root of both sides, we obtain |x| ≤ 1.
 """
 
-# Run formalization
+# Run formalization (proof task). For calculation-style DAGs use e.g.:
+#   ProofFlow(..., task_profile="calc")
+#   proof_flow.autoformalize_series(problem="...", raw_cot="...")
 proof_flow.autoformalize_series(nl_proof)
 # Get results
 lean_code = proof_flow.get_lean_code()

@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 
 from .lean_check import LeanServer
+from .node_schema import ROLE_CLAIM, ROLE_CONDITION, ROLE_FINAL, infer_role, is_condition, is_context
+from .prompt_builder import TaskProfile
 from .proof_formalize import run_formalizer_prompt
 from .proof_graph import build_proof_graph
 from .proof_prover import run_solver_prompt
@@ -37,7 +39,12 @@ class ProofFlow:
                  formalize_model_manager: LLMManager,
                  solver_model_manager: LLMManager,
                  score_model_manager: Optional[LLMManager] = None,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 task_profile: TaskProfile = "proof",
+                 id_schema_mode: Optional[str] = None,
+                 validation_profile: str = "strict",
+                 allow_graph_rewrite_after: int = 3,
+                 enable_ctx_solver: bool = True):
         """
         Initialize ProofFlow with required components.
         
@@ -48,6 +55,8 @@ class ProofFlow:
             solver_model_manager: LLM manager for automated proof generation
             score_model_manager: Optional LLM manager for semantic scoring
             verbose: Whether to print progress information during processing
+            task_profile: "proof" (theorem+proof NL) or "calc" (problem + raw CoT).
+            id_schema_mode: Override node-id convention; default maps calc→calc schema, else legacy.
         """
         self.proof_items = None
         self.nl_proof = None
@@ -58,6 +67,13 @@ class ProofFlow:
         self.score_model_manager = score_model_manager 
         self.llm_call_logs = []  # Store LLM call logs per instance
         self.lean_server = lean_server
+        self.task_profile = task_profile
+        self.id_schema_mode = id_schema_mode or (
+            "calc" if task_profile == "calc" else "legacy"
+        )
+        self.validation_profile = validation_profile
+        self.allow_graph_rewrite_after = allow_graph_rewrite_after
+        self.enable_ctx_solver = enable_ctx_solver
     
     # ===== PRIVATE UTILITIES =====
     
@@ -94,9 +110,17 @@ class ProofFlow:
         Args:
             tries: Number of attempts made during graph generation
         """
-        n_conditions = sum(1 for item in self.proof_items if item.id.startswith('tc_'))
-        n_lemmas = sum(1 for item in self.proof_items if item.id.startswith('l'))
-        n_solutions = sum(1 for item in self.proof_items if item.id.startswith('ts_'))
+        n_conditions = 0
+        n_lemmas = 0
+        n_solutions = 0
+        for item in self.proof_items:
+            role = infer_role(item.id, getattr(item, "node_type", None), mode=self.id_schema_mode)
+            if role == ROLE_CONDITION:
+                n_conditions += 1
+            elif role == ROLE_CLAIM:
+                n_lemmas += 1
+            elif role == ROLE_FINAL:
+                n_solutions += 1
         if tries:
             self._print_status(f"\nProof graph completed ({tries} tries): {n_conditions} condition(s), {n_lemmas} lemma(s), {n_solutions} theorem solution(s).", style='header')
         else:
@@ -119,13 +143,18 @@ class ProofFlow:
 
     # ===== CORE FORMALIZATION =====
     
-    def autoformalize_series(self, nl_proof: str,
-                             graph_builder_retries: int = 3, 
-                             formalizer_retries: int = 3,
-                             prover_retries: int = 3,
-                             follow_dag: bool = True,
-                             previous_context: bool = True,
-                             supply_proof: bool = True) -> None:
+    def autoformalize_series(
+        self,
+        nl_proof: str = "",
+        *,
+        problem: str = "",
+        raw_cot: str = "",
+        graph_builder_retries: int = 3, 
+        formalizer_retries: int = 3,
+        prover_retries: int = 3,
+        follow_dag: bool = True,
+        previous_context: bool = True,
+        supply_proof: bool = True) -> None:
         """
         Process a natural language proof through the complete formalization pipeline.
         
@@ -135,7 +164,8 @@ class ProofFlow:
         3. Attempts to automatically prove each formalized step
         
         Args:
-            nl_proof: Natural language proof text to formalize
+            nl_proof: For task_profile='proof', the full natural-language theorem+proof text.
+            problem/raw_cot: For task_profile='calc', the problem statement and model chain-of-thought.
             graph_builder_retries: Number of retries for proof graph generation
             formalizer_retries: Number of retries for each formalization step
             prover_retries: Number of retries for each proof generation step
@@ -143,38 +173,92 @@ class ProofFlow:
             previous_context: Whether to provide dependency statements during formalization
             supply_proof: Whether to supply original proof text at each step for context
         """
-        self.nl_proof = nl_proof
+        if self.task_profile == "calc":
+            if not problem or not raw_cot:
+                raise ValueError("task_profile='calc' requires problem= and raw_cot=")
+            self.nl_proof = f"Problem:\n{problem}\n\nRaw CoT:\n{raw_cot}"
+        else:
+            if not nl_proof:
+                raise ValueError("task_profile='proof' requires nl_proof")
+            self.nl_proof = nl_proof
         
         self._print_status("\nBuilding proof graph...", style='bold')
 
         #Step 1. Build proof graph
-        self.proof_items, tries = build_proof_graph(nl_proof, 
-                                                    model_manager = self.graph_model_manager, 
-                                                    logs = self.llm_call_logs, 
-                                                    follow_dag = follow_dag,
-                                                    max_retries = graph_builder_retries)
+        self.proof_items, tries = build_proof_graph(
+            model_manager=self.graph_model_manager,
+            task_profile=self.task_profile,
+            problem=problem,
+            raw_cot=raw_cot,
+            natural_language_proof=nl_proof,
+            logs=self.llm_call_logs,
+            follow_dag=follow_dag,
+            max_retries=graph_builder_retries,
+            id_schema_mode=self.id_schema_mode,
+            validation_profile=self.validation_profile,
+            allow_graph_rewrite_after=self.allow_graph_rewrite_after,
+        )
         self._print_progress_summary(tries)
 
         for idx, item in enumerate(self.proof_items):
             self._print_item_progress(idx, len(self.proof_items), item.id)
 
+            # Check if we should skip formalizing this node
+            node_type = getattr(item, "node_type", None)
+            needs_verification = int(getattr(item, "needs_verification", 0) or 0)
+            is_condition_or_def = is_condition(item.id, node_type, mode=self.id_schema_mode) or (
+                is_context(item.id, node_type, mode=self.id_schema_mode) and needs_verification != 1
+            )
+
+            if self.task_profile == "calc" and is_condition_or_def:
+                # Skip formalizing context/condition nodes in calc mode; 
+                # pass them as natural language to downstream claims instead.
+                item.formalization = {
+                    "lean_code": "",
+                    "lean_pass": True,  # Pretend it passed so downstream doesn't complain
+                    "error_msg": [],
+                    "tries": 0,
+                    "attempt_history": [],
+                    "skipped": True
+                }
+                self._print_status(f"   \u2714 Skipped formalizing item {item.id} (passed as natural language).", style='okgreen')
+                
+                # Also skip solver
+                item.solved_lemma = {}
+                continue
+
+            if self.task_profile == "calc":
+                # For calc, we do not supply the problem or CoT to avoid the formalizer
+                # trying to formalize the entire problem/solution inside a single node (like pc_1).
+                context_to_supply = ""
+            else:
+                context_to_supply = self.nl_proof
+
             #Step 1. Formalize statement with Goedel-Formalizer
-            formalization  = run_formalizer_prompt(item, 
-                                                   lean_server = self.lean_server,
-                                                   all_items = self.proof_items, 
-                                                   model_manager = self.formalize_model_manager, 
-                                                   logs = self.llm_call_logs,
-                                                   max_retries = formalizer_retries,
-                                                   previous_context = previous_context,
-                                                   original_proof = self.nl_proof if supply_proof else "")
+            formalization  = run_formalizer_prompt(
+                item,
+                lean_server=self.lean_server,
+                all_items=self.proof_items,
+                model_manager=self.formalize_model_manager,
+                task_profile=self.task_profile,
+                logs=self.llm_call_logs,
+                max_retries=formalizer_retries,
+                previous_context=previous_context,
+                original_proof=context_to_supply if supply_proof else "",
+                supply_proof=supply_proof,
+            )
             item.formalization = formalization
 
             #Step 2. Solver with tactics
-            solved_lemma = run_solver_prompt(item, 
-                                             lean_server=self.lean_server,
-                                             model_manager=self.solver_model_manager, 
-                                             logs=self.llm_call_logs,
-                                             max_retries=prover_retries)
+            solved_lemma = run_solver_prompt(
+                item,
+                lean_server=self.lean_server,
+                model_manager=self.solver_model_manager,
+                task_profile=self.task_profile,
+                logs=self.llm_call_logs,
+                max_retries=prover_retries,
+                enable_ctx_solver=self.enable_ctx_solver,
+            )
             item.solved_lemma = solved_lemma
         
             self._print_item_progress(idx, len(self.proof_items), item.id, completed=True)

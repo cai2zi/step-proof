@@ -10,10 +10,10 @@ set -euo pipefail
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.5-9b}"
 PORT="${PORT:-8001}"
-TP="${TP:-2}"
+TP="${TP:-4}"
 GPUS="${GPUS:-0,1,2,3}"
 DTYPE="${DTYPE:-float16}"
-MAX_LEN="${MAX_LEN:-32768}"
+MAX_LEN="${MAX_LEN:-40960}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 
 echo "[graph] model=${MODEL_PATH}"

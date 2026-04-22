@@ -3,7 +3,9 @@ import re
 import httpx
 
 from .lean_check import LeanServer, process_lean_string
+from .node_schema import is_condition, is_context
 from .proof_graph import Definition, TheoremCondition
+from .prompt_builder import TaskProfile, build_chat_messages
 from .utils import LLMManager
 
 
@@ -29,67 +31,49 @@ def extract_code_validate(text_input, lean_server):
         "lean_pass": lean_pass,
         "lean_verify": lean_verify,
         "error_msg": error_msg,
-    }  # None if lean_verify else error_msg
+    }
 
 
 def run_solver_prompt(
     item: dict,
     lean_server: LeanServer,
     model_manager: LLMManager,
+    task_profile: TaskProfile = "proof",
     logs=None,
     max_retries: int = 3,
     prove_negation: bool = False,
+    enable_ctx_solver: bool = True,
 ) -> tuple:
     """
-    Builds the prompt string for the item and calls the LLM API.
-    Uses the .md file as a system prompt.
-    If the item has dependencies, appends their filtered dicts to the prompt string.
-    Returns the parsed and validated JSON, with retry logic if validation fails.
+    Builds prompts from prompts/{proof|calc}/** templates and calls the LLM API.
     """
 
-    # Deal with non-correct input cases
+    node_type = getattr(item, "node_type", None)
+    needs_verification = int(getattr(item, "needs_verification", 0) or 0)
     is_condition_or_def = isinstance(item, TheoremCondition) or isinstance(
         item, Definition
     )
     if is_condition_or_def:
-        return {}
+        if not enable_ctx_solver:
+            return {}
+        if is_condition(item.id, node_type):
+            return {}
+        if is_context(item.id, node_type) and needs_verification != 1:
+            return {}
     if not item.formalization["lean_code"]:
         return {}
 
-    if prove_negation:
-        user_prompt_content = f"""
-Your task is **not to prove the given theorem/lemma, but to disprove it by proving its logical negation**.
-
-This is the original lemma/theorem statement I want you to refute:
-{item.statement}
-
-Below is the Lean 4 code for the statement. 
-You must instead negate the goal and then attempt to prove that negation in Lean 4. 
-If the statement cannot be directly negated syntactically, carefully construct the logically equivalent negation.
-
-Please output only valid Lean 4 code with the negated theorem and a proof attempt.
-
-```lean4
-{item.formalization["lean_code"]}
-```"""
-
-    else:
-        user_prompt_content = f"""
-This is the lemma/theorem I want you to prove:
-{item.statement}
-
-Complete the following Lean 4 code (**do not remove imports**):
-
-```lean4
-{item.formalization["lean_code"]}
-```
-
-You can adapt previous lean4 lemma statement to fit the goal, specially if you encounter errors.
-"""
+    stage = "prove_negation" if prove_negation else "prove"
+    messages = build_chat_messages(
+        task_profile,
+        stage,
+        statement=item.statement,
+        lean_code=item.formalization["lean_code"],
+    )
     if not item.formalization["lean_pass"]:
-        user_prompt_content += "/n The previous Lean4 code I sent you contains errors. Please take that into account."
-
-    messages = [{"role": "user", "content": user_prompt_content}]
+        messages[1]["content"] += (
+            "\n\nThe previous Lean4 code I sent you contains errors. Please take that into account."
+        )
 
     results = {
         "lean_code": "",
@@ -105,24 +89,21 @@ You can adapt previous lean4 lemma statement to fit the goal, specially if you e
         except httpx.TimeoutException as e:
             print("OpenAI request failed:", e)
 
-        # Try to validate the response
         try:
             results = extract_code_validate(response, lean_server)
             results["tries"] = attempt + 1
             results["attempt_history"] = attempt_history
 
-            # check if lean is correct -> if yes end loop here
             if results["lean_verify"]:
                 return results
-            else:  # if not ajust prompt_str
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Lean error/warnings: "
-                        + str(results["error_msg"])
-                        + "\n\n Based on these errors, please correct the previous response. ",
-                    }
-                )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Lean error/warnings: "
+                    + str(results["error_msg"])
+                    + "\n\n Based on these errors, please correct the previous response. ",
+                }
+            )
         except ValueError as e:
             messages.append(
                 {

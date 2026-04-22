@@ -5,6 +5,8 @@ import webbrowser
 import matplotlib.pyplot as plt
 import networkx as nx
 
+from .node_schema import ROLE_CLAIM, ROLE_CONDITION, ROLE_CONTEXT, ROLE_FINAL, infer_role
+
 
 def _get_item_value(item, key, default=None):
     """
@@ -41,17 +43,17 @@ def build_dag(data):
         if not node_id:
             continue  # Skip items without ID
         
-        # Determine the type based on ID prefix
-        if node_id.startswith('tc_'):
-            item_type = 'condition'
-        elif node_id.startswith('ts_'):
-            item_type = 'solution'
-        elif node_id.startswith('l'):
-            item_type = 'lemma'
-        elif node_id.startswith('def'):
-            item_type = 'definition'
+        role = infer_role(node_id, _get_item_value(item, "node_type"), mode="auto")
+        if role == ROLE_CONDITION:
+            item_type = "condition"
+        elif role == ROLE_FINAL:
+            item_type = "solution"
+        elif role == ROLE_CONTEXT:
+            item_type = "definition"
+        elif role == ROLE_CLAIM:
+            item_type = "lemma"
         else:
-            item_type = 'unknown'
+            item_type = "unknown"
         
         # Convert Pydantic model to dict if needed, or copy existing dict
         if hasattr(item, 'model_dump'):
@@ -124,11 +126,11 @@ def create_static_visualization(G, node_info, filename='proof_graph.png', dpi: i
     # Add legend
     legend_elements = [
         plt.scatter([], [], c='#ffcccc', s=200,
-                    label='Theorem Conditions (tc)'),
-        plt.scatter([], [], c='#ccccff', s=200, label='Lemmas (l)'),
+                    label='Conditions (pc/tc)'),
+        plt.scatter([], [], c='#ccccff', s=200, label='Claims (c/l)'),
         plt.scatter([], [], c='#ccffcc', s=200,
-                    label='Theorem Solutions (ts)'),
-        plt.scatter([], [], c='#c0a07f', s=200, label='Definitions (def)')
+                    label='Final answers (fa/ts)'),
+        plt.scatter([], [], c='#c0a07f', s=200, label='Context (ctx/def)')
     ]
     plt.legend(handles=legend_elements, loc='upper left', fontsize=10)
     
@@ -853,3 +855,145 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
     webbrowser.open('file://' + os.path.realpath(filename))
     
     return None
+
+
+def create_interactive_graph_only_visualization(
+    G,
+    node_info,
+    title: str = "Graph-Only DAG",
+    subtitle: str = "",
+    filename: str = "graph_only_dag.html",
+):
+    """Create an interactive HTML visualization for graph-only stage.
+
+    This view intentionally hides any formalization/prover status and focuses
+    on DAG structure, node text, and dependencies.
+    """
+    nodes_data = []
+    edges_data = []
+
+    for node in G.nodes():
+        info = node_info[node]
+        node_type = info.get("type", "unknown")
+        if node_type == "condition":
+            color = "#eba0a0"
+            shape = "box"
+        elif node_type == "solution":
+            color = "#a3c2a8"
+            shape = "star"
+        elif node_type == "definition":
+            color = "#cfb795"
+            shape = "box"
+        else:
+            color = "#8dafcc"
+            shape = "dot"
+
+        nodes_data.append(
+            {
+                "id": node,
+                "label": node,
+                "shape": shape,
+                "size": 28 if shape != "star" else 36,
+                "color": {"background": color, "border": "#444444"},
+                "borderWidth": 2,
+                "font": {"size": 14, "color": "#000000"},
+            }
+        )
+
+    for src, dst in G.edges():
+        edges_data.append(
+            {
+                "from": src,
+                "to": dst,
+                "arrows": "to",
+                "color": {"color": "#666666"},
+                "width": 2,
+            }
+        )
+
+    safe_subtitle = subtitle.replace("\\n", "\n")
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{title}</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet"/>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+    .wrap {{ display: flex; height: 100vh; }}
+    .left {{ flex: 1; position: relative; background: #fff; }}
+    .right {{ width: 440px; border-left: 1px solid #ddd; overflow: auto; background: #fafafa; }}
+    #mynetwork {{ width: 100%; height: 100%; }}
+    .legend {{ position: absolute; left: 16px; top: 16px; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; z-index: 10; }}
+    .legend .item {{ display: flex; align-items: center; margin: 6px 0; font-size: 13px; }}
+    .legend .dot {{ width: 14px; height: 14px; border: 1px solid #555; margin-right: 8px; border-radius: 3px; }}
+    .title {{ padding: 16px; border-bottom: 1px solid #e6e6e6; background: #fff; }}
+    .title h2 {{ margin: 0 0 8px; font-size: 18px; }}
+    .title pre {{ margin: 0; white-space: pre-wrap; font-size: 12px; color: #555; }}
+    .panel {{ padding: 14px 16px; }}
+    .field {{ margin-bottom: 12px; background: #fff; border: 1px solid #e4e4e4; border-radius: 6px; }}
+    .field .k {{ font-size: 12px; color: #666; padding: 8px 10px; border-bottom: 1px solid #eee; text-transform: uppercase; }}
+    .field .v {{ font-size: 13px; color: #222; padding: 10px; white-space: pre-wrap; word-break: break-word; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="left">
+      <div class="legend">
+        <div class="item"><span class="dot" style="background:#eba0a0"></span>problem condition</div>
+        <div class="item"><span class="dot" style="background:#cfb795"></span>context</div>
+        <div class="item"><span class="dot" style="background:#8dafcc"></span>claim</div>
+        <div class="item"><span class="dot" style="background:#a3c2a8"></span>final answer</div>
+      </div>
+      <div id="mynetwork"></div>
+    </div>
+    <div class="right">
+      <div class="title">
+        <h2>{title}</h2>
+        <pre>{safe_subtitle}</pre>
+      </div>
+      <div class="panel" id="info"></div>
+    </div>
+  </div>
+  <script>
+    const nodeInfo = {json.dumps(node_info, ensure_ascii=False)};
+    const nodes = new vis.DataSet({json.dumps(nodes_data, ensure_ascii=False)});
+    const edges = new vis.DataSet({json.dumps(edges_data, ensure_ascii=False)});
+    const network = new vis.Network(
+      document.getElementById("mynetwork"),
+      {{ nodes, edges }},
+      {{
+        physics: {{ enabled: true, solver: "hierarchicalRepulsion" }},
+        interaction: {{ hover: true, navigationButtons: true, keyboard: true }},
+        edges: {{ smooth: true }}
+      }}
+    );
+
+    function renderInfo(nodeId) {{
+      const info = nodeInfo[nodeId];
+      if (!info) return;
+      const keys = ["id", "type", "node_type", "dependencies", "natural_language", "statement"];
+      let html = "";
+      for (const k of keys) {{
+        const v = info[k];
+        if (v === undefined || v === null || v === "") continue;
+        const text = typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+        html += `<div class="field"><div class="k">${{k}}</div><div class="v">${{text}}</div></div>`;
+      }}
+      document.getElementById("info").innerHTML = html;
+    }}
+
+    network.on("click", (params) => {{
+      if (params.nodes && params.nodes.length > 0) renderInfo(params.nodes[0]);
+    }});
+    network.once("stabilized", () => network.fit());
+  </script>
+</body>
+</html>
+"""
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"Graph-only interactive visualization saved as {filename}")
+    webbrowser.open("file://" + os.path.realpath(filename))
