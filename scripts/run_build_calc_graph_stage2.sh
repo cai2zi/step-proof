@@ -27,7 +27,7 @@ LIMIT="${LIMIT:--1}"
 
 # ── Lean 校验 ────────────────────────────────────────────────────────────
 MATHLIB_PATH="${MATHLIB_PATH:-/data/czx/mathlib4}"
-LEAN_CHECK_CONCURRENCY="${LEAN_CHECK_CONCURRENCY:-16}"
+LEAN_CHECK_CONCURRENCY="${LEAN_CHECK_CONCURRENCY:-64}"
 LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/calc_runs/lean_jobs}"
 
 # ── 运行时 / 调度 ────────────────────────────────────────────────────────

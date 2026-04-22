@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import os
 from dotenv import load_dotenv
 
 from .lean_check import LeanServer
@@ -115,21 +115,58 @@ class Stage2Runner:
         self.done_ids = set() if self.args.no_resume else load_done_ids(self.out_path)
         source_rows = load_jsonl(self.args.infile)
         loaded = 0
+        resumed_count = 0
+        partial_count = 0
+        form_done = 0
+        prove_done = 0
+        empty_skipped = 0
+
         for row in source_rows:
             record_id = str(row.get("meta", {}).get("record_id", "")).strip()
-            if not record_id or record_id in self.done_ids:
+            if not record_id:
                 continue
+            if record_id in self.done_ids:
+                resumed_count += 1
+                continue
+
+            # Protection A: Skip empty graphs
+            graph_nodes = row.get("graph", {}).get("nodes", [])
+            if not graph_nodes:
+                empty_skipped += 1
+                append_jsonl(
+                    self.failed_path,
+                    {
+                        "meta": row.get("meta", {}),
+                        "error": "Empty graph (no nodes). Skipped by Stage 2.",
+                        "created_at": utc_now_iso(),
+                    },
+                )
+                continue
+
             ckpt_path = self.checkpoint_dir / f"{record_id}.json"
             if not self.args.no_resume and ckpt_path.is_file():
                 record = restore_record_state(
                     json.loads(ckpt_path.read_text(encoding="utf-8"))
                 )
+                partial_count += 1
+                for node in record["nodes"].values():
+                    if node["form_status"] in FORM_TERMINAL:
+                        form_done += 1
+                    if node["prove_status"] in {"success", "failed", "skipped"}:
+                        prove_done += 1
             else:
                 record = fresh_record_state(row)
             self.records[record_id] = record
             loaded += 1
             if self.args.limit >= 0 and loaded >= self.args.limit:
                 break
+
+        print(f"\n[resume] Fully completed records skipped: {resumed_count}")
+        print(f"[resume] Empty graph records skipped: {empty_skipped}")
+        print(f"[resume] Partially completed records loaded: {partial_count}")
+        print(f"[resume] Nodes already formed: {form_done}")
+        print(f"[resume] Nodes already proved/skipped: {prove_done}")
+        print(f"[resume] Total pending records to process: {loaded}\n")
 
     def _resolve_stage_gpus(self) -> tuple[str, str]:
         if self.args.formalizer_gpus and self.args.prover_gpus:
@@ -403,7 +440,7 @@ class Stage2Runner:
             return
 
         outputs = await asyncio.to_thread(
-            llm.batch_generate,
+            llm.generate,
             [task["messages"] for task in tasks],
         )
         results = await asyncio.gather(

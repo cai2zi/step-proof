@@ -191,6 +191,9 @@ def validate_proof_graph(
     Validates the proof graph data using Pydantic models.
     Returns the validated data or raises ValidationError.
     """
+    if not data:
+        raise ValueError("The parsed graph is empty (no nodes). Please generate at least one valid node.")
+
     validated_items = []
     normalized_data = normalize_nodes(data)
     for item in normalized_data:
