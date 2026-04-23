@@ -12,6 +12,8 @@ cd "${STEP_PROOF_ROOT}"
 PYTHON="python3"
 STAGE2_JSONL="${STEP_PROOF_ROOT}/result_stage3/stage3_results.jsonl"
 OUT_DIR="/data/czx/step-proof/result_stage3/HTML"
+# STAGE2_JSONL="${STEP_PROOF_ROOT}/result_stage2/stage2_results.jsonl"
+# OUT_DIR="/data/czx/step-proof/result_stage2/HTML"
 SOURCE="results"   # results | graph
 GRAPH_ONLY="0"     # 1 => 使用 graph-only 视图
 SEED="42"

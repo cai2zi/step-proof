@@ -19,7 +19,7 @@ cd "${STEP_PROOF_ROOT}"
 PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
 
 # ── 输入 ──────────────────────────────────────────────────────────────────
-PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data}"
+PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
 PARQUET_GLOB="${PARQUET_GLOB:-*.parquet}"
 ID_COLUMN="${ID_COLUMN:-id}"
 QUESTION_COLUMN="${QUESTION_COLUMN:-question}"
@@ -33,8 +33,8 @@ FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
 # ── vLLM ─────────────────────────────────────────────────────────────────
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
-TP="${TP:-2}"
-GPUS="${GPUS:-2,3}"
+TP="${TP:-4}"
+GPUS="${GPUS:-4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 MAX_TOKENS="${MAX_TOKENS:-16384}"
@@ -42,7 +42,7 @@ TEMPERATURE="${TEMPERATURE:-0.9}"
 TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
 
 # ── Batch / retry ─────────────────────────────────────────────────────────
-BATCH_SIZE="${BATCH_SIZE:-64}"
+BATCH_SIZE="${BATCH_SIZE:-128}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 
 exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
