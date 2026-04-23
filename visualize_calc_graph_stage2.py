@@ -17,6 +17,7 @@ from proofflow.vis import (
     create_interactive_graph_only_visualization,
     create_interactive_visualization,
 )
+from proofflow.stage2_common import build_dependency_context
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -97,6 +98,27 @@ def _title_and_subtitle(rec: Dict[str, Any], source: str) -> tuple[str, str]:
     return title, subtitle
 
 
+def _build_proof_str(rec: Dict[str, Any]) -> str:
+    inp = rec.get("input", {})
+    problem = str(inp.get("problem", "")).strip()
+    raw_cot = str(inp.get("raw_cot", "")).strip()
+    answer = str(inp.get("answer", "")).strip()
+
+    parts: List[str] = []
+    if problem:
+        parts.append("Problem:")
+        parts.append(problem)
+    if raw_cot:
+        parts.append("")
+        parts.append("Raw CoT:")
+        parts.append(raw_cot)
+    if answer and not raw_cot:
+        parts.append("")
+        parts.append("Answer:")
+        parts.append(answer)
+    return "\n".join(parts)
+
+
 def _extract_nodes(rec: Dict[str, Any], source: str) -> List[Dict[str, Any]]:
     if source == "results":
         nodes = rec.get("results", {}).get("nodes", [])
@@ -110,6 +132,14 @@ def _extract_nodes(rec: Dict[str, Any], source: str) -> List[Dict[str, Any]]:
         raise SystemExit(f"invalid --source: {source} (expected: results|graph)")
     if not isinstance(nodes, list) or not nodes:
         raise SystemExit(f"Selected record has empty {source}.nodes and no fallback node list")
+
+    nodes_dict = {n["id"]: n for n in nodes}
+    for n in nodes:
+        if "formalization" not in n or not isinstance(n["formalization"], dict):
+            n["formalization"] = {}
+        if not n["formalization"].get("dependency_context_block"):
+            n["formalization"]["dependency_context_block"] = build_dependency_context(n, nodes_dict)
+
     return nodes
 
 
@@ -192,8 +222,8 @@ def main() -> None:
             )
             continue
 
-        # results 模式默认展示 form/prove 状态（边框颜色），graph 模式同样可渲染。
-        proof_str = str(rec.get("input", {}).get("problem", ""))
+        # 左侧信息面板展示问题 + 原始推理（raw_cot）。
+        proof_str = _build_proof_str(rec)
         create_interactive_visualization(
             G=G,
             node_info=node_info,

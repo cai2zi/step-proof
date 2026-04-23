@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import webbrowser
@@ -149,6 +150,7 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
     # Process proof_str to handle escape sequences
     if proof_str:
         proof_str = proof_str.replace('\\t', '\t').replace('\\n', '\n')
+    safe_proof_str = html.escape(proof_str)
     
     # Build nodes and edges data for vis.js
     nodes_data = []
@@ -285,6 +287,37 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
             }}
+
+            .proof-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 10px;
+            }}
+
+            .copy-proof-btn {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 28px;
+                height: 28px;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                background: #ffffff;
+                cursor: pointer;
+                font-size: 14px;
+                line-height: 1;
+            }}
+
+            .copy-proof-btn:hover {{
+                background: #f3f4f6;
+            }}
+
+            .copy-proof-btn.copied {{
+                border-color: #10b981;
+                color: #047857;
+            }}
             
             #proof-str-content {{
                 color: #4a5568;
@@ -401,6 +434,9 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                 color: #2d3748;
                 line-height: 1.5;
                 font-size: 12px;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                font-family: 'Monaco', 'Courier New', monospace;
             }}
             
             .placeholder {{
@@ -518,8 +554,17 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
         <div class="container">
             <div id="left-panel">
                 <div id="proof-str-panel">
-                    <div id="proof-str-title">Informal theorem and proof</div>
-                    <div id="proof-str-content">{proof_str}</div>
+                    <div class="proof-header">
+                        <div id="proof-str-title">Informal theorem and proof</div>
+                        <button
+                            id="copy-proof-btn"
+                            class="copy-proof-btn"
+                            title="Copy text"
+                            aria-label="Copy text"
+                            onclick="copyProofText()"
+                        >📋</button>
+                    </div>
+                    <div id="proof-str-content">{safe_proof_str}</div>
                     <div class="resizer-vertical" id="vertical-resizer"></div>
                 </div>
                 <div id="graph-container">
@@ -759,6 +804,35 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                 setTimeout(function() {{
                     network.fit();
                 }}, 300);
+            }}
+
+            function copyProofText() {{
+                const proofText = document.getElementById('proof-str-content').textContent || '';
+                const copyBtn = document.getElementById('copy-proof-btn');
+                if (!proofText) return;
+
+                const onCopied = () => {{
+                    const original = copyBtn.textContent;
+                    copyBtn.textContent = '✓';
+                    copyBtn.classList.add('copied');
+                    setTimeout(() => {{
+                        copyBtn.textContent = original;
+                        copyBtn.classList.remove('copied');
+                    }}, 1200);
+                }};
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(proofText).then(onCopied);
+                    return;
+                }}
+
+                const textArea = document.createElement('textarea');
+                textArea.value = proofText;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                onCopied();
             }}
             
             // Initial network fit

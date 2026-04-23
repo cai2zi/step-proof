@@ -419,6 +419,7 @@ class Stage2Runner:
                 "error_msg": [] if result["lean_pass"] else result["error_msg"],
                 "tries": attempt_num,
                 "attempt_history": history,
+                "dependency_context_block": node.get("dependency_context_block", ""),
             }
             success = bool(result["lean_pass"])
             retry_error = f"Lean error: {result['error_msg']}"
@@ -429,6 +430,7 @@ class Stage2Runner:
                 "error_msg": result["error_msg"],
                 "tries": attempt_num,
                 "attempt_history": history,
+                "dependency_context_block": node.get("dependency_context_block", ""),
             }
             success = False
             retry_error = f"Error: {result['error_msg']}"

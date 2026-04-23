@@ -10,8 +10,8 @@ cd "${STEP_PROOF_ROOT}"
 
 # ── 硬编码配置区（按需修改） ───────────────────────────────────────────────
 PYTHON="python3"
-STAGE2_JSONL="${STEP_PROOF_ROOT}/calc_runs/stage2_results.jsonl"
-OUT_DIR="/data/czx/step-proof/calc_runs/HTML"
+STAGE2_JSONL="${STEP_PROOF_ROOT}/result_stage3/stage3_results.jsonl"
+OUT_DIR="/data/czx/step-proof/result_stage3/HTML"
 SOURCE="results"   # results | graph
 GRAPH_ONLY="0"     # 1 => 使用 graph-only 视图
 SEED="42"
@@ -23,7 +23,7 @@ MODE="ids"
 RANDOM_N="3"
 
 # MODE=ids 时使用（逗号分隔）
-RECORD_IDS="1,2,3,6,12"
+RECORD_IDS="16,6,11,82,91,107,118,124,63"
 # ──────────────────────────────────────────────────────────────────────────
 
 EXTRA_ARGS=()

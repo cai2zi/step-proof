@@ -27,9 +27,9 @@ RESPONSE_COLUMN="${RESPONSE_COLUMN:-response}"
 LIMIT="${LIMIT:--1}"
 
 # ── 输出 ──────────────────────────────────────────────────────────────────
-OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/calc_runs/graphs.jsonl}"
-SKIPPED_JSONL="${SKIPPED_JSONL:-${STEP_PROOF_ROOT}/calc_runs/skipped.jsonl}"
-FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/calc_runs/failed.jsonl}"
+OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
+SKIPPED_JSONL="${SKIPPED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/skipped.jsonl}"
+FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
 # ── vLLM ─────────────────────────────────────────────────────────────────
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"

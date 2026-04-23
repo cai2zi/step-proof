@@ -9,25 +9,24 @@ cd "${STEP_PROOF_ROOT}"
 
 PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
 
-INFILE="${INFILE:-${STEP_PROOF_ROOT}/calc_runs/graphs.jsonl}"
-OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/calc_runs/stage2_results.jsonl}"
-FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/calc_runs/stage2_failed.jsonl}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-${STEP_PROOF_ROOT}/calc_runs/stage2_ckpt}"
-LIMIT="${LIMIT:--1}"
+INFILE="${INFILE:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
+OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage2/stage2_results.jsonl}"
+FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage2/stage2_failed.jsonl}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${STEP_PROOF_ROOT}/result_stage2/stage2_ckpt}"
+LIMIT="${LIMIT:-128}"
 
 MATHLIB_PATH="${MATHLIB_PATH:-/data/czx/mathlib4}"
 LEAN_CHECK_CONCURRENCY="${LEAN_CHECK_CONCURRENCY:-64}"
-LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/calc_runs/lean_jobs}"
+LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/result_stage2/lean_jobs}"
 
 GPUS="${GPUS:-4,5,6,7}"
-FORMALIZER_GPUS="${FORMALIZER_GPUS:-4,5}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"
 ID_SCHEMA_MODE="${ID_SCHEMA_MODE:-calc}"
 BATCH_WAIT_MS="${BATCH_WAIT_MS:-200}"
 
 FORMALIZER_MODEL_PATH="${FORMALIZER_MODEL_PATH:-/data/czx/models/Goedel-Formalizer-V2-8B}"
-FORMALIZER_TP="${FORMALIZER_TP:-2}"
+FORMALIZER_TP="${FORMALIZER_TP:-4}"
 FORMALIZER_MAX_TOKENS="${FORMALIZER_MAX_TOKENS:-8192}"
 FORMALIZER_TOKEN_LIMIT="${FORMALIZER_TOKEN_LIMIT:-32768}"
 FORMALIZER_TEMPERATURE="${FORMALIZER_TEMPERATURE:-0.2}"
@@ -44,7 +43,6 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage2.py" \
   --lean-check-concurrency "${LEAN_CHECK_CONCURRENCY}" \
   --lean-temp-dir "${LEAN_TEMP_DIR}" \
   --gpus "${GPUS}" \
-  --formalizer-gpus "${FORMALIZER_GPUS}" \
   --dtype "${DTYPE}" \
   --gpu-memory-utilization "${GPU_MEM_UTIL}" \
   --id-schema-mode "${ID_SCHEMA_MODE}" \

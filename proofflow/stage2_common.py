@@ -125,6 +125,7 @@ def empty_formalization(skipped: bool = False) -> JsonDict:
         "error_msg": [],
         "tries": 0,
         "attempt_history": [],
+        "dependency_context_block": "",
     }
     if skipped:
         payload["lean_pass"] = True
@@ -192,13 +193,16 @@ def build_form_messages(
 ) -> List[Dict[str, str]]:
     role = role_of(node, record["meta"]["id_schema_mode"])
     lemma_header = f"theorem {node['id']}" if role == ROLE_FINAL else f"lemma {node['id']}"
+    dependency_context_block = build_dependency_context(node, record["nodes"])
+    # Persist the exact context block used to build this form prompt.
+    node["dependency_context_block"] = dependency_context_block
     return build_chat_messages(
         "calc",
         "formalize_claim",
         lemma_header=lemma_header,
         statement=node["statement"],
         dependencies=list(node.get("dependencies") or []),
-        dependency_context_block=build_dependency_context(node, record["nodes"]),
+        dependency_context_block=dependency_context_block,
     )
 
 

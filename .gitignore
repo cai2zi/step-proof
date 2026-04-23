@@ -196,3 +196,4 @@ data/
 logs/
 **/logs/
 *.html
+result_*/
