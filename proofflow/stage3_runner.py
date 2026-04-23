@@ -14,34 +14,35 @@ from dotenv import load_dotenv
 from .lean_check import LeanServer
 from .llm_worker import LLMWorkerClient, LLMWorkerConfig
 from .stage2_common import (
-    FORM_TERMINAL,
     NodeState,
     RecordState,
     StageResult,
     StageTask,
     append_jsonl,
-    blocks_children,
-    build_form_messages,
+    build_prove_messages,
     extract_last_lean_block,
-    fresh_record_state,
+    fresh_stage3_record_state,
     load_done_ids,
     load_jsonl,
-    restore_record_state,
-    stage2_checkpoint_payload,
-    stage2_final_payload,
-    stage2_record_terminal,
+    restore_stage3_record_state,
+    stage3_checkpoint_payload,
+    stage3_final_payload,
+    stage3_record_terminal,
     utc_now_iso,
     write_json_atomic,
 )
 
 load_dotenv()
 
-DEFAULT_FORMALIZER_MODEL_PATH = os.getenv(
-    "FORMALIZER_MODEL_PATH", "/data/czx/models/Goedel-Formalizer-V2-8B"
+DEFAULT_PROVER_MODEL_PATH = os.getenv(
+    "PROVER_MODEL_PATH", "/data/czx/models/Goedel-Prover-V2-8B"
 )
-DEFAULT_GPUS = os.getenv("STAGE2_GPUS", os.getenv("GRAPH_GPUS", "0,1,2,3"))
-DEFAULT_FORMALIZER_GPUS = os.getenv("FORMALIZER_GPUS", "")
-DEFAULT_FORMALIZER_TP = int(os.getenv("FORMALIZER_TP", "2"))
+DEFAULT_GPUS = os.getenv(
+    "STAGE3_GPUS",
+    os.getenv("STAGE2_GPUS", os.getenv("GRAPH_GPUS", "0,1,2,3")),
+)
+DEFAULT_PROVER_GPUS = os.getenv("PROVER_GPUS", "")
+DEFAULT_PROVER_TP = int(os.getenv("PROVER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
 
 
@@ -60,33 +61,33 @@ class StageSpec:
     enqueued_flag: str
 
 
-FORM_STAGE = StageSpec(
-    name="form",
-    llm_attr="formalizer",
-    queue_attr="form_queue",
-    batch_size_arg="form_batch_size",
-    retries_arg="formalizer_retries",
-    status_key="form_status",
-    retries_key="form_retries_used",
-    messages_key="form_messages",
-    history_key="form_attempt_history",
-    result_key="formalization",
-    enqueued_flag="_form_enqueued",
+PROVE_STAGE = StageSpec(
+    name="prove",
+    llm_attr="prover",
+    queue_attr="prove_queue",
+    batch_size_arg="prove_batch_size",
+    retries_arg="prover_retries",
+    status_key="prove_status",
+    retries_key="prove_retries_used",
+    messages_key="prove_messages",
+    history_key="prove_attempt_history",
+    result_key="solved_lemma",
+    enqueued_flag="_prove_enqueued",
 )
 
 
-class Stage2Runner:
+class Stage3Runner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.records: Dict[str, RecordState] = {}
-        self.form_queue: asyncio.Queue[Tuple[str, str]] = asyncio.Queue()
+        self.prove_queue: asyncio.Queue[Tuple[str, str]] = asyncio.Queue()
         self.state_lock = asyncio.Lock()
         self.lean_semaphore = asyncio.Semaphore(args.lean_check_concurrency)
         self.out_path = args.out
         self.failed_path = args.failed
         self.checkpoint_dir = args.checkpoint_dir
         self.done_ids: set[str] = set()
-        self.formalizer: Optional[LLMWorkerClient] = None
+        self.prover: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
 
     def load_records(self) -> None:
@@ -95,7 +96,7 @@ class Stage2Runner:
         loaded = 0
         resumed_count = 0
         partial_count = 0
-        form_done = 0
+        prove_done = 0
         empty_skipped = 0
 
         for row in source_rows:
@@ -106,14 +107,14 @@ class Stage2Runner:
                 resumed_count += 1
                 continue
 
-            graph_nodes = row.get("graph", {}).get("nodes", [])
-            if not graph_nodes:
+            result_nodes = row.get("results", {}).get("nodes", [])
+            if not result_nodes:
                 empty_skipped += 1
                 append_jsonl(
                     self.failed_path,
                     {
                         "meta": row.get("meta", {}),
-                        "error": "Empty graph (no nodes). Skipped by Stage 2.",
+                        "error": "Empty stage2 results (no results.nodes). Skipped by Stage 3.",
                         "created_at": utc_now_iso(),
                     },
                 )
@@ -121,15 +122,15 @@ class Stage2Runner:
 
             ckpt_path = self.checkpoint_dir / f"{record_id}.json"
             if not self.args.no_resume and ckpt_path.is_file():
-                record = restore_record_state(
+                record = restore_stage3_record_state(
                     json.loads(ckpt_path.read_text(encoding="utf-8"))
                 )
                 partial_count += 1
                 for node in record["nodes"].values():
-                    if node["form_status"] in FORM_TERMINAL:
-                        form_done += 1
+                    if node.get("prove_status") in {"success", "failed", "skipped"}:
+                        prove_done += 1
             else:
-                record = fresh_record_state(row)
+                record = fresh_stage3_record_state(row)
             self.records[record_id] = record
             loaded += 1
             if self.args.limit >= 0 and loaded >= self.args.limit:
@@ -138,44 +139,44 @@ class Stage2Runner:
         print(f"\n[resume] Fully completed records skipped: {resumed_count}")
         print(f"[resume] Empty graph records skipped: {empty_skipped}")
         print(f"[resume] Partially completed records loaded: {partial_count}")
-        print(f"[resume] Nodes already formed: {form_done}")
+        print(f"[resume] Nodes already proved/skipped: {prove_done}")
         print(f"[resume] Total pending records to process: {loaded}\n")
 
-    def _resolve_formalizer_gpus(self) -> str:
-        if self.args.formalizer_gpus:
-            return self.args.formalizer_gpus
+    def _resolve_prover_gpus(self) -> str:
+        if self.args.prover_gpus:
+            return self.args.prover_gpus
 
         all_devices = [device.strip() for device in self.args.gpus.split(",") if device.strip()]
-        total_needed = self.args.formalizer_tensor_parallel_size
+        total_needed = self.args.prover_tensor_parallel_size
         if len(all_devices) < total_needed:
             raise RuntimeError(
-                "Not enough GPUs in --gpus to derive the formalizer worker. "
+                "Not enough GPUs in --gpus to derive the prover worker. "
                 f"Need {total_needed}, got {len(all_devices)} from {self.args.gpus!r}."
             )
         return ",".join(all_devices[:total_needed])
 
     async def init_runtime(self) -> None:
-        formalizer_gpus = self._resolve_formalizer_gpus()
+        prover_gpus = self._resolve_prover_gpus()
         print(
-            "[init] loading formalizer",
-            self.args.formalizer_model_path,
-            f"(tp={self.args.formalizer_tensor_parallel_size}, gpus={formalizer_gpus}) ...",
+            "[init] loading prover",
+            self.args.prover_model_path,
+            f"(tp={self.args.prover_tensor_parallel_size}, gpus={prover_gpus}) ...",
         )
-        self.formalizer = LLMWorkerClient(
+        self.prover = LLMWorkerClient(
             config=LLMWorkerConfig(
-                name="formalizer",
-                gpus=formalizer_gpus,
-                model_path=self.args.formalizer_model_path,
-                tensor_parallel_size=self.args.formalizer_tensor_parallel_size,
-                max_tokens=self.args.formalizer_max_tokens,
-                temperature=self.args.formalizer_temperature,
-                token_limit=self.args.formalizer_token_limit,
+                name="prover",
+                gpus=prover_gpus,
+                model_path=self.args.prover_model_path,
+                tensor_parallel_size=self.args.prover_tensor_parallel_size,
+                max_tokens=self.args.prover_max_tokens,
+                temperature=self.args.prover_temperature,
+                token_limit=self.args.prover_token_limit,
                 dtype=self.args.dtype,
                 gpu_memory_utilization=self.args.gpu_memory_utilization,
             )
         )
         self.lean_server = LeanServer(project_path=self.args.mathlib_path)
-        print("[init] stage2 runtime ready.\n")
+        print("[init] stage3 runtime ready.\n")
 
     def _queue_for(self, spec: StageSpec) -> asyncio.Queue[Tuple[str, str]]:
         return getattr(self, spec.queue_attr)
@@ -186,12 +187,12 @@ class Stage2Runner:
     def _build_messages_for_stage(
         self,
         spec: StageSpec,
-        record: RecordState,
+        _record: RecordState,
         node: NodeState,
     ) -> List[Dict[str, str]]:
-        if spec.name != "form":
-            raise ValueError(f"Unsupported Stage 2 stage: {spec.name}")
-        return build_form_messages(record, node)
+        if spec.name != "prove":
+            raise ValueError(f"Unsupported Stage 3 stage: {spec.name}")
+        return build_prove_messages(node)
 
     async def _enqueue_stage_locked(
         self,
@@ -205,27 +206,27 @@ class Stage2Runner:
         node[spec.enqueued_flag] = True
         await self._queue_for(spec).put((record_id, node_id))
 
-    async def _enqueue_form_locked(self, record_id: str, node_id: str) -> None:
-        await self._enqueue_stage_locked(FORM_STAGE, record_id, node_id)
+    async def _enqueue_prove_locked(self, record_id: str, node_id: str) -> None:
+        await self._enqueue_stage_locked(PROVE_STAGE, record_id, node_id)
 
     async def seed_ready_queues(self) -> None:
         async with self.state_lock:
             for record_id, record in self.records.items():
-                if stage2_record_terminal(record):
+                if stage3_record_terminal(record):
                     await self._persist_record_locked(record_id)
                     continue
                 for node_id, node in record["nodes"].items():
-                    if node["form_status"] == "pending" and node["blocking_remaining"] == 0:
-                        await self._enqueue_form_locked(record_id, node_id)
-                if stage2_record_terminal(record):
+                    if node.get("prove_status") == "pending":
+                        await self._enqueue_prove_locked(record_id, node_id)
+                if stage3_record_terminal(record):
                     await self._persist_record_locked(record_id)
 
     async def _persist_record_locked(self, record_id: str) -> None:
         if record_id in self.done_ids:
             return
         record = self.records[record_id]
-        if stage2_record_terminal(record):
-            payload = stage2_final_payload(record)
+        if stage3_record_terminal(record):
+            payload = stage3_final_payload(record)
             append_jsonl(self.out_path, payload)
             ckpt_path = self.checkpoint_dir / f"{record_id}.json"
             if ckpt_path.exists():
@@ -235,26 +236,8 @@ class Stage2Runner:
             return
         write_json_atomic(
             self.checkpoint_dir / f"{record_id}.json",
-            stage2_checkpoint_payload(record),
+            stage3_checkpoint_payload(record),
         )
-
-    async def _mark_children_ready_locked(self, record_id: str, node_id: str) -> None:
-        record = self.records[record_id]
-        node = record["nodes"][node_id]
-        if not blocks_children(node, self.args.id_schema_mode):
-            return
-        for child_id in node.get("successors") or []:
-            child = record["nodes"].get(child_id)
-            if child is None or child["form_status"] != "pending":
-                continue
-            if node_id not in (child.get("blocking_parents") or []):
-                continue
-            child["blocking_remaining"] = max(0, int(child.get("blocking_remaining", 0)) - 1)
-            if child["blocking_remaining"] == 0:
-                await self._enqueue_form_locked(record_id, child_id)
-
-    async def _schedule_after_form_locked(self, record_id: str, node_id: str) -> None:
-        await self._mark_children_ready_locked(record_id, node_id)
 
     async def _validate_lean(
         self,
@@ -336,10 +319,10 @@ class Stage2Runner:
                 if node is None:
                     continue
                 node[spec.enqueued_flag] = False
-                if node[spec.status_key] != "pending":
+                if node.get(spec.status_key) != "pending":
                     continue
                 node[spec.status_key] = "running"
-                if not node[spec.messages_key]:
+                if not node.get(spec.messages_key):
                     node[spec.messages_key] = self._build_messages_for_stage(spec, record, node)
                 attempt_num = int(node.get(spec.retries_key, 0)) + 1
                 tasks.append(
@@ -371,11 +354,11 @@ class Stage2Runner:
                 record = self.records[task["record_id"]]
                 node = record["nodes"][task["node_id"]]
                 dirty_record_ids.add(task["record_id"])
-                await self._apply_form_result_locked(record, node, task, result)
+                await self._apply_prove_result_locked(record, node, task, result)
             for record_id in sorted(dirty_record_ids):
                 await self._persist_record_locked(record_id)
 
-    async def _apply_form_result_locked(
+    async def _apply_prove_result_locked(
         self,
         record: RecordState,
         node: NodeState,
@@ -383,21 +366,23 @@ class Stage2Runner:
         result: StageResult,
     ) -> None:
         attempt_num = task["attempt_num"]
-        history = list(node.get("form_attempt_history") or [])
+        history = list(node.get("prove_attempt_history") or [])
         if result["kind"] == "validated":
             payload = {
                 "lean_code": result["lean_code"],
                 "lean_pass": bool(result["lean_pass"]),
-                "error_msg": [] if result["lean_pass"] else result["error_msg"],
+                "lean_verify": bool(result["lean_verify"]),
+                "error_msg": result["error_msg"],
                 "tries": attempt_num,
                 "attempt_history": history,
             }
-            success = bool(result["lean_pass"])
-            retry_error = f"Lean error: {result['error_msg']}"
+            success = bool(result["lean_verify"])
+            retry_error = f"Lean error/warnings: {result['error_msg']}"
         else:
             payload = {
                 "lean_code": result.get("lean_code", ""),
                 "lean_pass": False,
+                "lean_verify": False,
                 "error_msg": result["error_msg"],
                 "tries": attempt_num,
                 "attempt_history": history,
@@ -405,43 +390,41 @@ class Stage2Runner:
             success = False
             retry_error = f"Error: {result['error_msg']}"
 
-        node["form_retries_used"] = attempt_num
-        node["formalization"] = payload
+        node["prove_retries_used"] = attempt_num
+        node["solved_lemma"] = payload
         if success:
-            node["form_status"] = "success"
-            await self._schedule_after_form_locked(record["meta"]["record_id"], node["id"])
+            node["prove_status"] = "success"
             return
 
-        if result["kind"] == "token_overflow" or attempt_num >= self.args.formalizer_retries:
-            node["form_status"] = "failed"
-            await self._schedule_after_form_locked(record["meta"]["record_id"], node["id"])
+        if result["kind"] == "token_overflow" or attempt_num >= self.args.prover_retries:
+            node["prove_status"] = "failed"
             return
 
-        node["form_attempt_history"] = history + [payload]
-        node["form_status"] = "pending"
-        node["form_messages"].append(
+        node["prove_attempt_history"] = history + [payload]
+        node["prove_status"] = "pending"
+        node["prove_messages"].append(
             {
                 "role": "user",
                 "content": (
                     retry_error
-                    + "\n\nBased on the error, please correct the previous response. "
+                    + "\n\n Based on these errors, please correct the previous response. "
                 ),
             }
         )
-        await self._enqueue_form_locked(record["meta"]["record_id"], node["id"])
+        await self._enqueue_prove_locked(record["meta"]["record_id"], node["id"])
 
-    async def _form_worker(self) -> None:
+    async def _prove_worker(self) -> None:
         while True:
             batch = await self._pop_batch(
-                self._queue_for(FORM_STAGE),
-                getattr(self.args, FORM_STAGE.batch_size_arg),
+                self._queue_for(PROVE_STAGE),
+                getattr(self.args, PROVE_STAGE.batch_size_arg),
             )
             if batch:
-                print(f"[form] batch={len(batch)}")
-                await self._run_stage_batch(FORM_STAGE, batch)
+                print(f"[prove] batch={len(batch)}")
+                await self._run_stage_batch(PROVE_STAGE, batch)
                 continue
             async with self.state_lock:
-                if all(stage2_record_terminal(record) for record in self.records.values()):
+                if all(stage3_record_terminal(record) for record in self.records.values()):
                     return
 
     async def run(self) -> None:
@@ -466,7 +449,7 @@ class Stage2Runner:
         await self.seed_ready_queues()
         try:
             await asyncio.gather(
-                self._form_worker(),
+                self._prove_worker(),
             )
         except Exception as e:
             append_jsonl(
@@ -478,39 +461,39 @@ class Stage2Runner:
             )
             raise
         finally:
-            if self.formalizer is not None:
-                self.formalizer.close()
+            if self.prover is not None:
+                self.prover.close()
 
-        done = sum(1 for record in self.records.values() if stage2_record_terminal(record))
+        done = sum(1 for record in self.records.values() if stage3_record_terminal(record))
         print(f"\n[done] completed={done} out={self.out_path} failed={self.failed_path}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Stage 2 (batch + local vLLM): form from graph-v1 JSONL.",
+        description="Stage 3 (batch + local vLLM): prove from stage2 graph-form-v1 JSONL.",
     )
     parser.add_argument(
         "--infile",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "calc_runs" / "graphs.jsonl",
-        help="Stage 1 graph-v1 JSONL",
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage2_results.jsonl",
+        help="Stage 2 graph-form-v1 JSONL",
     )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage2_results.jsonl",
-        help="Stage 2 final results JSONL",
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_results.jsonl",
+        help="Stage 3 final results JSONL",
     )
     parser.add_argument(
         "--failed",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage2_failed.jsonl",
-        help="Stage 2 fatal failures JSONL",
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_failed.jsonl",
+        help="Stage 3 fatal failures JSONL",
     )
     parser.add_argument(
         "--checkpoint-dir",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage2_ckpt",
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_ckpt",
         help="Checkpoint directory for partial record states",
     )
     parser.add_argument("--limit", type=int, default=-1, help="Max NEW records to process")
@@ -525,17 +508,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--gpus", default=DEFAULT_GPUS)
-    parser.add_argument("--formalizer-gpus", default=DEFAULT_FORMALIZER_GPUS)
+    parser.add_argument("--prover-gpus", default=DEFAULT_PROVER_GPUS)
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--id-schema-mode", default="calc")
     parser.add_argument("--batch-wait-ms", type=int, default=200)
 
-    parser.add_argument("--formalizer-model-path", default=DEFAULT_FORMALIZER_MODEL_PATH)
-    parser.add_argument("--formalizer-tensor-parallel-size", type=int, default=DEFAULT_FORMALIZER_TP)
-    parser.add_argument("--formalizer-max-tokens", type=int, default=8192)
-    parser.add_argument("--formalizer-token-limit", type=int, default=32768)
-    parser.add_argument("--formalizer-temperature", type=float, default=0.2)
-    parser.add_argument("--formalizer-retries", type=int, default=3)
-    parser.add_argument("--form-batch-size", type=int, default=64)
+    parser.add_argument("--prover-model-path", default=DEFAULT_PROVER_MODEL_PATH)
+    parser.add_argument("--prover-tensor-parallel-size", type=int, default=DEFAULT_PROVER_TP)
+    parser.add_argument("--prover-max-tokens", type=int, default=8192)
+    parser.add_argument("--prover-token-limit", type=int, default=32768)
+    parser.add_argument("--prover-temperature", type=float, default=0.2)
+    parser.add_argument("--prover-retries", type=int, default=3)
+    parser.add_argument("--prove-batch-size", type=int, default=64)
     return parser

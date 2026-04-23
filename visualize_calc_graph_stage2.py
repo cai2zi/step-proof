@@ -100,12 +100,16 @@ def _title_and_subtitle(rec: Dict[str, Any], source: str) -> tuple[str, str]:
 def _extract_nodes(rec: Dict[str, Any], source: str) -> List[Dict[str, Any]]:
     if source == "results":
         nodes = rec.get("results", {}).get("nodes", [])
+        if (not isinstance(nodes, list) or not nodes) and rec.get("graph", {}).get("nodes"):
+            nodes = rec.get("graph", {}).get("nodes", [])
     elif source == "graph":
         nodes = rec.get("graph", {}).get("nodes", [])
+        if (not isinstance(nodes, list) or not nodes) and rec.get("results", {}).get("nodes"):
+            nodes = rec.get("results", {}).get("nodes", [])
     else:
         raise SystemExit(f"invalid --source: {source} (expected: results|graph)")
     if not isinstance(nodes, list) or not nodes:
-        raise SystemExit(f"Selected record has empty {source}.nodes")
+        raise SystemExit(f"Selected record has empty {source}.nodes and no fallback node list")
     return nodes
 
 

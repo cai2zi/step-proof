@@ -217,61 +217,100 @@ def build_prove_messages(node: NodeState) -> List[Dict[str, str]]:
     return messages
 
 
-def record_terminal(record: RecordState) -> bool:
+def stage2_record_terminal(record: RecordState) -> bool:
+    return all(node["form_status"] in FORM_TERMINAL for node in record["nodes"].values())
+
+
+def stage3_record_terminal(record: RecordState) -> bool:
+    return all(
+        node.get("prove_status", "pending") in PROVE_TERMINAL
+        for node in record["nodes"].values()
+    )
+
+
+def _node_result_base(node: NodeState) -> JsonDict:
+    return {
+        "id": node["id"],
+        "role": node["role"],
+        "node_type": node.get("node_type", ""),
+        "natural_language": node.get("natural_language", ""),
+        "statement": node.get("statement", ""),
+        "dependencies": list(node.get("dependencies") or []),
+        "needs_verification": node.get("needs_verification"),
+    }
+
+
+def _form_counts(record: RecordState) -> Dict[str, int]:
+    counts = defaultdict(int)
     for node in record["nodes"].values():
-        if node["form_status"] not in FORM_TERMINAL:
-            return False
-        if node["prove_status"] not in PROVE_TERMINAL:
-            return False
-    return True
+        counts[node["form_status"]] += 1
+    return dict(counts)
 
 
-def record_summary(record: RecordState) -> JsonDict:
-    form_counts = defaultdict(int)
-    prove_counts = defaultdict(int)
+def _prove_counts(record: RecordState) -> Dict[str, int]:
+    counts = defaultdict(int)
     for node in record["nodes"].values():
-        form_counts[node["form_status"]] += 1
-        prove_counts[node["prove_status"]] += 1
+        counts[node.get("prove_status", "pending")] += 1
+    return dict(counts)
 
+
+def stage2_record_summary(record: RecordState) -> JsonDict:
     any_failed = any(
-        node["form_status"] == "failed" or node["prove_status"] == "failed"
+        node["form_status"] == "failed" for node in record["nodes"].values()
+    )
+    status = "completed_with_failures" if any_failed else "completed"
+    return {
+        "record_status": status,
+        "updated_at": utc_now_iso(),
+        "form_stats": _form_counts(record),
+    }
+
+
+def stage3_record_summary(record: RecordState) -> JsonDict:
+    any_failed = any(
+        node["form_status"] == "failed" or node.get("prove_status") == "failed"
         for node in record["nodes"].values()
     )
     status = "completed_with_failures" if any_failed else "completed"
     return {
         "record_status": status,
         "updated_at": utc_now_iso(),
-        "form_stats": dict(form_counts),
-        "prove_stats": dict(prove_counts),
+        "form_stats": _form_counts(record),
+        "prove_stats": _prove_counts(record),
     }
 
 
-def result_nodes(record: RecordState) -> List[JsonDict]:
+def stage2_result_nodes(record: RecordState) -> List[JsonDict]:
     order = record["graph"].get("topo_order") or list(record["nodes"].keys())
     nodes: List[JsonDict] = []
     for node_id in order:
         node = record["nodes"].get(node_id)
         if node is None:
             continue
-        nodes.append(
-            {
-                "id": node["id"],
-                "role": node["role"],
-                "node_type": node.get("node_type", ""),
-                "natural_language": node.get("natural_language", ""),
-                "statement": node.get("statement", ""),
-                "dependencies": list(node.get("dependencies") or []),
-                "needs_verification": node.get("needs_verification"),
-                "form_status": node["form_status"],
-                "prove_status": node["prove_status"],
-                "formalization": node.get("formalization") or empty_formalization(),
-                "solved_lemma": node.get("solved_lemma") or empty_solver(),
-            }
-        )
+        payload = _node_result_base(node)
+        payload["form_status"] = node["form_status"]
+        payload["formalization"] = node.get("formalization") or empty_formalization()
+        nodes.append(payload)
     return nodes
 
 
-def checkpoint_payload(record: RecordState) -> JsonDict:
+def stage3_result_nodes(record: RecordState) -> List[JsonDict]:
+    order = record["graph"].get("topo_order") or list(record["nodes"].keys())
+    nodes: List[JsonDict] = []
+    for node_id in order:
+        node = record["nodes"].get(node_id)
+        if node is None:
+            continue
+        payload = _node_result_base(node)
+        payload["form_status"] = node["form_status"]
+        payload["formalization"] = node.get("formalization") or empty_formalization()
+        payload["prove_status"] = node.get("prove_status", "skipped")
+        payload["solved_lemma"] = node.get("solved_lemma") or empty_solver(skipped=True)
+        nodes.append(payload)
+    return nodes
+
+
+def stage2_checkpoint_payload(record: RecordState) -> JsonDict:
     return {
         "meta": record["meta"],
         "input": record["input"],
@@ -294,14 +333,41 @@ def checkpoint_payload(record: RecordState) -> JsonDict:
                 "blocking_remaining": int(node.get("blocking_remaining", 0)),
                 "successors": list(node.get("successors") or []),
                 "form_status": node["form_status"],
-                "prove_status": node["prove_status"],
                 "form_retries_used": int(node.get("form_retries_used", 0)),
-                "prove_retries_used": int(node.get("prove_retries_used", 0)),
                 "formalization": node.get("formalization") or empty_formalization(),
-                "solved_lemma": node.get("solved_lemma") or empty_solver(),
                 "form_messages": node.get("form_messages") or [],
-                "prove_messages": node.get("prove_messages") or [],
                 "form_attempt_history": node.get("form_attempt_history") or [],
+            }
+            for node_id, node in record["nodes"].items()
+        },
+    }
+
+
+def stage3_checkpoint_payload(record: RecordState) -> JsonDict:
+    return {
+        "meta": record["meta"],
+        "input": record["input"],
+        "graph": record["graph"],
+        "execution": {
+            "record_status": record["record_status"],
+            "created_at": record["created_at"],
+            "updated_at": utc_now_iso(),
+        },
+        "runtime_nodes": {
+            node_id: {
+                "id": node["id"],
+                "role": node["role"],
+                "node_type": node.get("node_type", ""),
+                "natural_language": node.get("natural_language", ""),
+                "statement": node.get("statement", ""),
+                "dependencies": list(node.get("dependencies") or []),
+                "needs_verification": node.get("needs_verification"),
+                "form_status": node["form_status"],
+                "formalization": node.get("formalization") or empty_formalization(),
+                "prove_status": node.get("prove_status", "skipped"),
+                "prove_retries_used": int(node.get("prove_retries_used", 0)),
+                "solved_lemma": node.get("solved_lemma") or empty_solver(skipped=True),
+                "prove_messages": node.get("prove_messages") or [],
                 "prove_attempt_history": node.get("prove_attempt_history") or [],
             }
             for node_id, node in record["nodes"].items()
@@ -309,18 +375,34 @@ def checkpoint_payload(record: RecordState) -> JsonDict:
     }
 
 
-def final_payload(record: RecordState) -> JsonDict:
+def stage2_final_payload(record: RecordState) -> JsonDict:
     meta = dict(record["meta"])
-    meta["schema_version"] = "graph-formprove-v1"
+    meta["schema_version"] = "graph-form-v1"
     meta["stage2_created_at"] = record["created_at"]
     meta["stage2_updated_at"] = utc_now_iso()
     return {
         "meta": meta,
         "input": record["input"],
         "graph": record["graph"],
-        "execution": record_summary(record),
+        "execution": stage2_record_summary(record),
         "results": {
-            "nodes": result_nodes(record),
+            "nodes": stage2_result_nodes(record),
+        },
+    }
+
+
+def stage3_final_payload(record: RecordState) -> JsonDict:
+    meta = dict(record["meta"])
+    meta["schema_version"] = "graph-formprove-v1"
+    meta["stage3_created_at"] = record["created_at"]
+    meta["stage3_updated_at"] = utc_now_iso()
+    return {
+        "meta": meta,
+        "input": record["input"],
+        "graph": record["graph"],
+        "execution": stage3_record_summary(record),
+        "results": {
+            "nodes": stage3_result_nodes(record),
         },
     }
 
@@ -346,24 +428,14 @@ def fresh_record_state(raw: JsonDict) -> RecordState:
         state["blocking_parents"] = []
         state["blocking_remaining"] = 0
         state["form_retries_used"] = 0
-        state["prove_retries_used"] = 0
         state["form_attempt_history"] = []
-        state["prove_attempt_history"] = []
         state["formalization"] = empty_formalization(
             form_is_skipped(node, meta["id_schema_mode"])
         )
-        state["solved_lemma"] = empty_solver(
-            not should_prove(node, meta["id_schema_mode"])
-        )
         state["form_messages"] = []
-        state["prove_messages"] = []
         state["_form_enqueued"] = False
-        state["_prove_enqueued"] = False
         state["form_status"] = (
             "skipped" if form_is_skipped(node, meta["id_schema_mode"]) else "pending"
-        )
-        state["prove_status"] = (
-            "pending" if should_prove(node, meta["id_schema_mode"]) else "skipped"
         )
         nodes[node["id"]] = state
 
@@ -404,9 +476,67 @@ def restore_record_state(raw: JsonDict) -> RecordState:
         restored = dict(node)
         if restored.get("form_status") == "running":
             restored["form_status"] = "pending"
+        restored["_form_enqueued"] = False
+        record["nodes"][node_id] = restored
+    return record
+
+
+def fresh_stage3_record_state(raw: JsonDict) -> RecordState:
+    meta = dict(raw.get("meta") or {})
+    meta.setdefault("id_schema_mode", "calc")
+    result_nodes = list((raw.get("results") or {}).get("nodes") or [])
+    graph = dict(raw.get("graph") or {})
+    graph_nodes = list(graph.get("nodes") or [])
+    graph_lookup = {node.get("id"): dict(node) for node in graph_nodes if node.get("id")}
+
+    nodes: Dict[str, NodeState] = {}
+    for node in result_nodes:
+        node_id = node["id"]
+        merged = dict(graph_lookup.get(node_id, {}))
+        merged.update(dict(node))
+        merged["role"] = role_of(merged, meta["id_schema_mode"])
+        merged["form_status"] = merged.get("form_status", "pending")
+        merged["formalization"] = merged.get("formalization") or empty_formalization()
+        merged["prove_retries_used"] = 0
+        merged["prove_attempt_history"] = []
+        merged["prove_messages"] = []
+        merged["_prove_enqueued"] = False
+
+        if not should_prove(merged, meta["id_schema_mode"]):
+            merged["prove_status"] = "skipped"
+            merged["solved_lemma"] = empty_solver(skipped=True)
+        elif (merged.get("formalization") or {}).get("lean_code"):
+            merged["prove_status"] = "pending"
+            merged["solved_lemma"] = empty_solver()
+        else:
+            merged["prove_status"] = "skipped"
+            merged["solved_lemma"] = empty_solver(skipped=True)
+        nodes[node_id] = merged
+
+    return {
+        "meta": meta,
+        "input": dict(raw.get("input") or {}),
+        "graph": graph,
+        "nodes": nodes,
+        "created_at": utc_now_iso(),
+        "record_status": "running",
+    }
+
+
+def restore_stage3_record_state(raw: JsonDict) -> RecordState:
+    record = {
+        "meta": dict(raw.get("meta") or {}),
+        "input": dict(raw.get("input") or {}),
+        "graph": dict(raw.get("graph") or {}),
+        "nodes": {},
+        "created_at": raw.get("execution", {}).get("created_at") or utc_now_iso(),
+        "record_status": raw.get("execution", {}).get("record_status") or "running",
+    }
+    record["meta"].setdefault("id_schema_mode", "calc")
+    for node_id, node in (raw.get("runtime_nodes") or {}).items():
+        restored = dict(node)
         if restored.get("prove_status") == "running":
             restored["prove_status"] = "pending"
-        restored["_form_enqueued"] = False
         restored["_prove_enqueued"] = False
         record["nodes"][node_id] = restored
     return record
