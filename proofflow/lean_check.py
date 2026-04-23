@@ -170,6 +170,8 @@ def _analyze_lean_output(output: str):
         [
             "declaration uses 'sorry'" in output,
             'declaration uses "sorry"' in output,
+            "declaration uses `sorry`" in output,
+            '"kind":"hasSorry"' in output,
             "failed" in output,
         ]
     )
@@ -224,6 +226,8 @@ def verify_lean_lemma_server(
         [
             "declaration uses 'sorry'" in output,
             'declaration uses "sorry"' in output,
+            "declaration uses `sorry`" in output,
+            '"kind":"hasSorry"' in output,
             "failed" in output,
         ]
     )

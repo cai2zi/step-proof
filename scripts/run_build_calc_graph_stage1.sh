@@ -33,8 +33,8 @@ FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/calc_runs/failed.jsonl}"
 
 # ── vLLM ─────────────────────────────────────────────────────────────────
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
-TP="${TP:-4}"
-GPUS="${GPUS:-0,1,2,3}"
+TP="${TP:-2}"
+GPUS="${GPUS:-2,3}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 MAX_TOKENS="${MAX_TOKENS:-16384}"
