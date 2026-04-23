@@ -20,6 +20,10 @@ Important:
 
 - The "source_text" field must be an exact quote from either the problem text or the raw CoT text.
 - Overlapping quotes are allowed.
+- The "source_text" field must be a contiguous exact substring from the current Problem or current Raw CoT.
+- Never copy "source_text" from the few-shot examples.
+- Do NOT paraphrase, summarize, or synthesize "source_text".
+- If a node combines several adjacent sentences from the Raw CoT, use the full contiguous span as "source_text".
 
 --------------------------------------------------
 2. Complete Coverage of Reasoning
@@ -88,6 +92,12 @@ Use exactly one of the following values for "node_type":
    (e.g. "assume x > 0", "let z = y^2", "consider case 2"). Not standalone derived conclusions.
 3. "claim" — intermediate derived mathematical claims; the main reasoning steps.
 4. "final_answer" — the final conclusion, solution set, or simplified expression.
+
+Final-answer node rule:
+- Use "final_answer" for the node that first states the final requested result.
+- Do NOT create an extra final_answer node merely to restate a previous claim.
+- If the last mathematical claim already computes or identifies the requested answer, make that node "final_answer" instead of "claim".
+- Do NOT create a separate node only for rhetorical confirmation such as "checking the answer", "therefore", or "this matches the requirement", unless that sentence performs a necessary mathematical filtering step.
 
 --------------------------------------------------
 8. Required Output Keys
@@ -170,27 +180,119 @@ Output:
     "needs_verification": 1
   },
   {
-    "id": "c_3",
+    "id": "fa_1",
+    "node_type": "final_answer",
+    "source_text": "Since y^2 cannot be negative, z = -3/2 is invalid. Thus y^2 = 9, so y = ±3. Checking both values in the original equation shows that both work. Therefore the solution set is {3, -3}.",
+    "statement": "Because z = y^2 >= 0, the root z = -3/2 is rejected; the valid root z = 9 gives the complete solution set {3, -3} for (1/3)y^4 - y^2 = (3/2)y^2 + 9/2.",
+    "dependencies": ["pc_1", "ctx_1", "c_2"],
+    "needs_verification": 1
+  }
+]
+
+--------------------------------------------------
+Few-shot Example 2
+--------------------------------------------------
+
+Problem:
+A store sells notebooks for $2 each and pens for $1.50 each. If Mia buys 4 notebooks and 3 pens, how much does she pay in total?
+
+Raw CoT:
+The notebooks cost 4 * 2 = 8 dollars. The pens cost 3 * 1.50 = 4.50 dollars. Adding them gives 8 + 4.50 = 12.50 dollars.
+
+Output:
+[
+  {
+    "id": "pc_1",
+    "node_type": "problem_condition",
+    "source_text": "A store sells notebooks for $2 each and pens for $1.50 each. If Mia buys 4 notebooks and 3 pens, how much does she pay in total?",
+    "statement": "Notebooks cost $2 each, pens cost $1.50 each, and Mia buys 4 notebooks and 3 pens.",
+    "dependencies": [],
+    "needs_verification": 0
+  },
+  {
+    "id": "c_1",
     "node_type": "claim",
-    "source_text": "Since y^2 cannot be negative, z = -3/2 is invalid. Thus y^2 = 9, so y = ±3.",
-    "statement": "Because z = y^2 >= 0, the root z = -3/2 is rejected; the valid root z = 9 gives y = ±3.",
-    "dependencies": ["ctx_1", "c_2"],
+    "source_text": "The notebooks cost 4 * 2 = 8 dollars.",
+    "statement": "The cost of 4 notebooks at $2 each is $8.",
+    "dependencies": ["pc_1"],
     "needs_verification": 1
   },
   {
-    "id": "c_4",
+    "id": "c_2",
     "node_type": "claim",
-    "source_text": "Checking both values in the original equation shows that both work.",
-    "statement": "Both y = 3 and y = -3 satisfy the original equation (1/3)y^4 - y^2 = (3/2)y^2 + 9/2.",
-    "dependencies": ["pc_1", "c_3"],
+    "source_text": "The pens cost 3 * 1.50 = 4.50 dollars.",
+    "statement": "The cost of 3 pens at $1.50 each is $4.50.",
+    "dependencies": ["pc_1"],
     "needs_verification": 1
   },
   {
     "id": "fa_1",
     "node_type": "final_answer",
-    "source_text": "Therefore the solution set is {3, -3}.",
-    "statement": "The complete solution set of (1/3)y^4 - y^2 = (3/2)y^2 + 9/2 is {3, -3}.",
-    "dependencies": ["c_4"],
+    "source_text": "Adding them gives 8 + 4.50 = 12.50 dollars.",
+    "statement": "Mia pays $12.50 in total.",
+    "dependencies": ["c_1", "c_2"],
+    "needs_verification": 1
+  }
+]
+
+--------------------------------------------------
+Few-shot Example 3
+--------------------------------------------------
+
+Problem:
+Solve 2/x + 5 >= 3/x. Express your answer in interval notation.
+
+Raw CoT:
+Move 2/x to the right to get 5 >= 1/x. Since x cannot be 0, consider x > 0 and x < 0. If x > 0, multiplying by x gives 5x >= 1, so x >= 1/5. If x < 0, multiplying by x reverses the inequality and gives 5x <= 1, which is true for all x < 0. Therefore the solution is (-infinity, 0) union [1/5, infinity).
+
+Output:
+[
+  {
+    "id": "pc_1",
+    "node_type": "problem_condition",
+    "source_text": "Solve 2/x + 5 >= 3/x. Express your answer in interval notation.",
+    "statement": "Solve the inequality 2/x + 5 >= 3/x with x != 0, and express the solution in interval notation.",
+    "dependencies": [],
+    "needs_verification": 0
+  },
+  {
+    "id": "c_1",
+    "node_type": "claim",
+    "source_text": "Move 2/x to the right to get 5 >= 1/x.",
+    "statement": "The inequality 2/x + 5 >= 3/x is equivalent to 5 >= 1/x, with x != 0.",
+    "dependencies": ["pc_1"],
+    "needs_verification": 1
+  },
+  {
+    "id": "ctx_1",
+    "node_type": "context",
+    "source_text": "Since x cannot be 0, consider x > 0 and x < 0.",
+    "statement": "Split the analysis into the cases x > 0 and x < 0 because x cannot be 0.",
+    "dependencies": ["pc_1", "c_1"],
+    "needs_verification": 0
+  },
+  {
+    "id": "c_2",
+    "node_type": "claim",
+    "source_text": "If x > 0, multiplying by x gives 5x >= 1, so x >= 1/5.",
+    "statement": "In the case x > 0, the inequality 5 >= 1/x gives x >= 1/5.",
+    "dependencies": ["c_1", "ctx_1"],
+    "needs_verification": 1
+  },
+  {
+    "id": "c_3",
+    "node_type": "claim",
+    "source_text": "If x < 0, multiplying by x reverses the inequality and gives 5x <= 1, which is true for all x < 0.",
+    "statement": "In the case x < 0, the inequality 5 >= 1/x is true for all x < 0.",
+    "dependencies": ["c_1", "ctx_1"],
+    "needs_verification": 1
+  },
+  {
+    "id": "fa_1",
+    "node_type": "final_answer",
+    "source_text": "Therefore the solution is (-infinity, 0) union [1/5, infinity).",
+    "statement": "The solution set of 2/x + 5 >= 3/x is (-infinity, 0) union [1/5, infinity).",
+    "dependencies": ["c_2", "c_3"],
     "needs_verification": 1
   }
 ]
