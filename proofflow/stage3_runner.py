@@ -80,7 +80,9 @@ class Stage3Runner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.records: Dict[str, RecordState] = {}
-        self.prove_queue: asyncio.Queue[Tuple[str, str]] = asyncio.Queue()
+        self.prove_queue: asyncio.PriorityQueue[Tuple[Tuple[int, int, int], str, str]] = (
+            asyncio.PriorityQueue()
+        )
         self.state_lock = asyncio.Lock()
         self.lean_semaphore = asyncio.Semaphore(args.lean_check_concurrency)
         self.out_path = args.out
@@ -89,6 +91,7 @@ class Stage3Runner:
         self.done_ids: set[str] = set()
         self.prover: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
+        self.enqueue_seq = 0
 
     def load_records(self) -> None:
         self.done_ids = set() if self.args.no_resume else load_done_ids(self.out_path)
@@ -178,7 +181,10 @@ class Stage3Runner:
         self.lean_server = LeanServer(project_path=self.args.mathlib_path)
         print("[init] stage3 runtime ready.\n")
 
-    def _queue_for(self, spec: StageSpec) -> asyncio.Queue[Tuple[str, str]]:
+    def _queue_for(
+        self,
+        spec: StageSpec,
+    ) -> asyncio.PriorityQueue[Tuple[Tuple[int, int, int], str, str]]:
         return getattr(self, spec.queue_attr)
 
     def _llm_for(self, spec: StageSpec) -> Optional[LLMWorkerClient]:
@@ -194,20 +200,42 @@ class Stage3Runner:
             raise ValueError(f"Unsupported Stage 3 stage: {spec.name}")
         return build_prove_messages(node)
 
+    def _remaining_prove_nodes(self, record_id: str) -> int:
+        record = self.records[record_id]
+        return sum(
+            1
+            for node in record["nodes"].values()
+            if node.get("prove_status", "pending") not in {"success", "failed", "skipped"}
+        )
+
     async def _enqueue_stage_locked(
         self,
         spec: StageSpec,
         record_id: str,
         node_id: str,
+        *,
+        retry: bool,
     ) -> None:
         node = self.records[record_id]["nodes"][node_id]
         if node.get(spec.enqueued_flag):
             return
         node[spec.enqueued_flag] = True
-        await self._queue_for(spec).put((record_id, node_id))
+        self.enqueue_seq += 1
+        priority = (
+            self._remaining_prove_nodes(record_id),
+            0 if retry else 1,
+            self.enqueue_seq,
+        )
+        await self._queue_for(spec).put((priority, record_id, node_id))
 
-    async def _enqueue_prove_locked(self, record_id: str, node_id: str) -> None:
-        await self._enqueue_stage_locked(PROVE_STAGE, record_id, node_id)
+    async def _enqueue_prove_locked(
+        self,
+        record_id: str,
+        node_id: str,
+        *,
+        retry: bool = False,
+    ) -> None:
+        await self._enqueue_stage_locked(PROVE_STAGE, record_id, node_id, retry=retry)
 
     async def seed_ready_queues(self) -> None:
         async with self.state_lock:
@@ -286,7 +314,7 @@ class Stage3Runner:
 
     async def _pop_batch(
         self,
-        queue: asyncio.Queue[Tuple[str, str]],
+        queue: asyncio.PriorityQueue[Tuple[Tuple[int, int, int], str, str]],
         batch_size: int,
     ) -> List[Tuple[str, str]]:
         timeout = max(self.args.batch_wait_ms, 1) / 1000.0
@@ -300,7 +328,7 @@ class Stage3Runner:
                 items.append(queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
-        return items
+        return [(record_id, node_id) for _, record_id, node_id in items]
 
     async def _run_stage_batch(
         self,
@@ -411,7 +439,11 @@ class Stage3Runner:
                 ),
             }
         )
-        await self._enqueue_prove_locked(record["meta"]["record_id"], node["id"])
+        await self._enqueue_prove_locked(
+            record["meta"]["record_id"],
+            node["id"],
+            retry=True,
+        )
 
     async def _prove_worker(self) -> None:
         while True:
