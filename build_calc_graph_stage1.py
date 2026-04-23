@@ -236,6 +236,7 @@ def _build_payload(
     items: List[ProofGraphItem],
     id_schema_mode: str,
     tries: int,
+    include_think_in_dag: bool,
 ) -> Dict[str, Any]:
     nodes = _serialize_graph_nodes(items, id_schema_mode)
     return {
@@ -248,6 +249,7 @@ def _build_payload(
             "created_at": _utc_now_iso(),
             "graph_build_tries": tries,
             "id_schema_mode": id_schema_mode,
+            "include_think_in_dag": include_think_in_dag,
         },
         "input": {
             "problem": record.problem,
@@ -311,6 +313,16 @@ def main() -> None:
     parser.add_argument("--validation-profile", default="strict")
     parser.add_argument("--follow-dag", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--allow-graph-rewrite-after", type=int, default=3)
+    parser.add_argument(
+        "--include-think-in-dag",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow DAG extraction to see <think>...</think> content in the response. "
+            "Use --no-include-think-in-dag to hide think blocks from the graph model; "
+            "the full raw_cot is still written to output JSONL."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -376,6 +388,7 @@ def main() -> None:
                 task_profile="calc",
                 problem=str(problem),
                 raw_cot=str(raw_cot),
+                include_think_in_dag=args.include_think_in_dag,
             )
             new_count += 1
             return PendingRecord(
@@ -419,6 +432,10 @@ def main() -> None:
                         "source_file": record.source_file,
                         "source_row_pos": record.source_row_pos,
                         "reason": "token_overflow",
+                        "input": {
+                            "problem": record.problem,
+                            "raw_cot": record.raw_cot,
+                        },
                     }, ensure_ascii=False) + "\n")
                     skipped_f.flush()
                     stats["skipped"] += 1
@@ -437,7 +454,11 @@ def main() -> None:
 
                 if result.ok:
                     payload = _build_payload(
-                        record, result.items, args.id_schema_mode, record.retry_count + 1
+                        record,
+                        result.items,
+                        args.id_schema_mode,
+                        record.retry_count + 1,
+                        args.include_think_in_dag,
                     )
                     graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     graphs_f.flush()
@@ -462,7 +483,11 @@ def main() -> None:
                         )
                     if recovered is not None:
                         payload = _build_payload(
-                            record, recovered, args.id_schema_mode, record.retry_count + 1
+                            record,
+                            recovered,
+                            args.id_schema_mode,
+                            record.retry_count + 1,
+                            args.include_think_in_dag,
                         )
                         graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                         graphs_f.flush()
@@ -475,6 +500,10 @@ def main() -> None:
                             "source_row_pos": record.source_row_pos,
                             "retry_count": record.retry_count,
                             "last_error": result.error_msg,
+                            "input": {
+                                "problem": record.problem,
+                                "raw_cot": record.raw_cot,
+                            },
                         }, ensure_ascii=False) + "\n")
                         failed_f.flush()
                         stats["failed"] += 1

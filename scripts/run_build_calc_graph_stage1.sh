@@ -44,6 +44,14 @@ TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
 # ── Batch / retry ─────────────────────────────────────────────────────────
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
+INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-1}"
+
+THINK_FLAG="--include-think-in-dag"
+case "${INCLUDE_THINK_IN_DAG,,}" in
+  0|false|no|off)
+    THINK_FLAG="--no-include-think-in-dag"
+    ;;
+esac
 
 exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   --parquet-dir    "${PARQUET_DIR}" \
@@ -65,4 +73,5 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   --token-limit    "${TOKEN_LIMIT}" \
   --batch-size     "${BATCH_SIZE}" \
   --max-retries    "${MAX_RETRIES}" \
+  "${THINK_FLAG}" \
   "$@"

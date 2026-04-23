@@ -154,7 +154,8 @@ class ProofFlow:
         prover_retries: int = 3,
         follow_dag: bool = True,
         previous_context: bool = True,
-        supply_proof: bool = True) -> None:
+        supply_proof: bool = True,
+        include_think_in_dag: bool = True) -> None:
         """
         Process a natural language proof through the complete formalization pipeline.
         
@@ -172,6 +173,7 @@ class ProofFlow:
             follow_dag: Whether to follow DAG structure or condition on all previous steps
             previous_context: Whether to provide dependency statements during formalization
             supply_proof: Whether to supply original proof text at each step for context
+            include_think_in_dag: Whether DAG extraction may use <think>...</think> content.
         """
         if self.task_profile == "calc":
             if not problem or not raw_cot:
@@ -197,6 +199,7 @@ class ProofFlow:
             id_schema_mode=self.id_schema_mode,
             validation_profile=self.validation_profile,
             allow_graph_rewrite_after=self.allow_graph_rewrite_after,
+            include_think_in_dag=include_think_in_dag,
         )
         self._print_progress_summary(tries)
 

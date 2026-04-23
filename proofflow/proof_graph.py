@@ -376,17 +376,25 @@ class GraphParseResult:
     last_parsed_graph: Optional[List[dict]]
 
 
+def strip_think_blocks(text: str) -> str:
+    """Remove model-private <think>...</think> spans before DAG extraction."""
+    without_closed = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return re.sub(r"<think\b[^>]*>.*\Z", "", without_closed, flags=re.DOTALL | re.IGNORECASE).strip()
+
+
 def build_graph_messages(
     task_profile: TaskProfile,
     problem: str = "",
     raw_cot: str = "",
     natural_language_proof: str = "",
+    include_think_in_dag: bool = True,
 ) -> List[Dict[str, str]]:
     """Build the initial messages list for the graph LLM (no LLM call)."""
     if task_profile == "calc":
         if not problem or not raw_cot:
             raise ValueError("task_profile='calc' requires non-empty problem and raw_cot")
-        return build_chat_messages("calc", "dag", PROBLEM=problem, RAW_COT=raw_cot)
+        dag_raw_cot = raw_cot if include_think_in_dag else strip_think_blocks(raw_cot)
+        return build_chat_messages("calc", "dag", PROBLEM=problem, RAW_COT=dag_raw_cot)
     elif task_profile == "proof":
         if not natural_language_proof:
             raise ValueError("task_profile='proof' requires natural_language_proof")
@@ -512,6 +520,7 @@ def build_proof_graph(
     id_schema_mode: str = "auto",
     validation_profile: str = "strict",
     allow_graph_rewrite_after: int = 3,
+    include_think_in_dag: bool = True,
 ) -> tuple[List[ProofGraphItem], int]:
     """
     Calls the graph LLM using prompts/{proof|calc}/system/dag.md + user/dag.md.
@@ -521,7 +530,8 @@ def build_proof_graph(
     if task_profile == "calc":
         if not problem or not raw_cot:
             raise ValueError("task_profile='calc' requires non-empty problem and raw_cot")
-        messages = build_chat_messages("calc", "dag", PROBLEM=problem, RAW_COT=raw_cot)
+        dag_raw_cot = raw_cot if include_think_in_dag else strip_think_blocks(raw_cot)
+        messages = build_chat_messages("calc", "dag", PROBLEM=problem, RAW_COT=dag_raw_cot)
     elif task_profile == "proof":
         if not natural_language_proof:
             raise ValueError("task_profile='proof' requires natural_language_proof")
