@@ -19,12 +19,13 @@ cd "${STEP_PROOF_ROOT}"
 PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
 
 # ── 输入 ──────────────────────────────────────────────────────────────────
-PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
+# PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
+PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_2}"
 PARQUET_GLOB="${PARQUET_GLOB:-*.parquet}"
 ID_COLUMN="${ID_COLUMN:-id}"
 QUESTION_COLUMN="${QUESTION_COLUMN:-question}"
 RESPONSE_COLUMN="${RESPONSE_COLUMN:-response}"
-LIMIT="${LIMIT:--1}"
+LIMIT="${LIMIT:--10000}"
 
 # ── 输出 ──────────────────────────────────────────────────────────────────
 OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
@@ -33,8 +34,8 @@ FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
 # ── vLLM ─────────────────────────────────────────────────────────────────
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
-TP="${TP:-4}"
-GPUS="${GPUS:-4,5,6,7}"
+TP="${TP:-8}"
+GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 MAX_TOKENS="${MAX_TOKENS:-16384}"
@@ -44,14 +45,13 @@ TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
 # ── Batch / retry ─────────────────────────────────────────────────────────
 BATCH_SIZE="${BATCH_SIZE:-128}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
-INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-1}"
+INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-0}"
 
-THINK_FLAG="--include-think-in-dag"
-case "${INCLUDE_THINK_IN_DAG,,}" in
-  0|false|no|off)
-    THINK_FLAG="--no-include-think-in-dag"
-    ;;
-esac
+# 仅支持 0/1：1 开启，其它值一律视为 0。
+THINK_FLAG="--no-include-think-in-dag"
+if [[ "${INCLUDE_THINK_IN_DAG}" == "1" ]]; then
+  THINK_FLAG="--include-think-in-dag"
+fi
 
 exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   --parquet-dir    "${PARQUET_DIR}" \
