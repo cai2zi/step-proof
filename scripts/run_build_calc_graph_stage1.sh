@@ -31,15 +31,27 @@ OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
 SKIPPED_JSONL="${SKIPPED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/skipped.jsonl}"
 FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
-# ── vLLM ─────────────────────────────────────────────────────────────────
+# ── vLLM（采样默认对齐 OpenAI extra_body：top_k + chat_template_kwargs）────
 MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
 TP="${TP:-4}"
 GPUS="${GPUS:-4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
-MAX_TOKENS="${MAX_TOKENS:-16384}"
-TEMPERATURE="${TEMPERATURE:-0.9}"
+MAX_TOKENS="${MAX_TOKENS:-8192}"
+TEMPERATURE="${TEMPERATURE:-0.0}"
+TOP_P="${TOP_P:-1.0}"
+PRESENCE_PENALTY="${PRESENCE_PENALTY:-0.0}"
+FREQUENCY_PENALTY="${FREQUENCY_PENALTY:-0.0}"
+SEED="${SEED:-42}"
+TOP_K="${TOP_K:-20}"
 TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
+# 可选：覆盖 chat 模板参数，例如 CHAT_TEMPLATE_KWARGS_JSON='{"enable_thinking":true}'
+CHAT_TEMPLATE_KWARGS_JSON="${CHAT_TEMPLATE_KWARGS_JSON:-}"
+
+CHAT_KWARGS_ARGS=()
+if [ -n "${CHAT_TEMPLATE_KWARGS_JSON}" ]; then
+  CHAT_KWARGS_ARGS=(--chat-template-kwargs-json "${CHAT_TEMPLATE_KWARGS_JSON}")
+fi
 
 # ── Batch / retry ─────────────────────────────────────────────────────────
 BATCH_SIZE="${BATCH_SIZE:-128}"
@@ -70,7 +82,13 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   --gpu-memory-utilization "${GPU_MEM_UTIL}" \
   --max-tokens     "${MAX_TOKENS}" \
   --temperature    "${TEMPERATURE}" \
+  --top-p          "${TOP_P}" \
+  --presence-penalty "${PRESENCE_PENALTY}" \
+  --frequency-penalty "${FREQUENCY_PENALTY}" \
+  --seed           "${SEED}" \
+  --top-k          "${TOP_K}" \
   --token-limit    "${TOKEN_LIMIT}" \
+  "${CHAT_KWARGS_ARGS[@]}" \
   --batch-size     "${BATCH_SIZE}" \
   --max-retries    "${MAX_RETRIES}" \
   "${THINK_FLAG}" \

@@ -23,6 +23,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from proofflow.node_schema import infer_role, is_final, is_structural_final
+from proofflow.local_vllm import LocalLLMManager
 from proofflow.proof_graph import (
     GraphParseResult,
     ProofGraphItem,
@@ -53,72 +54,6 @@ class PendingRecord:
     messages: List[Dict[str, str]]
     retry_count: int = 0
     last_parsed_graph: Optional[List[dict]] = field(default=None, repr=False)
-
-
-# ---------------------------------------------------------------------------
-# Local vLLM manager
-# ---------------------------------------------------------------------------
-
-class LocalLLMManager:
-    """Wraps vllm.LLM for in-process batch generation with chat-template support."""
-
-    def __init__(
-        self,
-        model_path: str,
-        tensor_parallel_size: int = 4,
-        max_tokens: int = 16384,
-        temperature: float = 0.9,
-        token_limit: int = 40960,
-        dtype: str = "float16",
-        gpu_memory_utilization: float = 0.92,
-    ) -> None:
-        from vllm import LLM, SamplingParams
-        from transformers import AutoTokenizer
-
-        self.token_limit = token_limit
-        self.sampling_params = SamplingParams(temperature=temperature, max_tokens=max_tokens)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.llm = LLM(
-            model=model_path,
-            tensor_parallel_size=tensor_parallel_size,
-            dtype=dtype,
-            max_model_len=token_limit,
-            gpu_memory_utilization=gpu_memory_utilization,
-        )
-
-    def _to_prompt(self, messages: List[Dict[str, str]]) -> str:
-        return self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
-    def _token_count(self, prompt: str) -> int:
-        return len(self.tokenizer.encode(prompt, add_special_tokens=False))
-
-    def batch_generate(self, records: List[PendingRecord]) -> List[Optional[str]]:
-        """Generate responses for a batch of records.
-
-        Returns a list of the same length as `records`.
-        None at position i means the prompt exceeded token_limit (token overflow).
-        """
-        prompts = [self._to_prompt(r.messages) for r in records]
-
-        results: List[Optional[str]] = [None] * len(records)
-        valid_indices: List[int] = []
-        valid_prompts: List[str] = []
-
-        for i, prompt in enumerate(prompts):
-            if self._token_count(prompt) > self.token_limit:
-                results[i] = None  # overflow; stays None
-            else:
-                valid_indices.append(i)
-                valid_prompts.append(prompt)
-
-        if valid_prompts:
-            outputs = self.llm.generate(valid_prompts, self.sampling_params)
-            for j, idx in enumerate(valid_indices):
-                results[idx] = outputs[j].outputs[0].text
-
-        return results
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +236,18 @@ def main() -> None:
                         help="CUDA_VISIBLE_DEVICES for the local vLLM engine")
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.92)
-    parser.add_argument("--max-tokens", type=int, default=16384)
-    parser.add_argument("--temperature", type=float, default=0.9)
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--presence-penalty", type=float, default=0.0)
+    parser.add_argument("--frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument(
+        "--chat-template-kwargs-json",
+        default=None,
+        help='JSON object for tokenizer.apply_chat_template (default: {"enable_thinking": false})',
+    )
     parser.add_argument("--token-limit", type=int, default=40960,
                         help="Max prompt tokens; longer prompts are skipped")
     # Batch / retry
@@ -325,6 +270,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
+    if args.chat_template_kwargs_json:
+        chat_template_kwargs = json.loads(args.chat_template_kwargs_json)
+        if not isinstance(chat_template_kwargs, dict):
+            raise SystemExit("--chat-template-kwargs-json must be a JSON object")
 
     if not args.parquet_dir.is_dir():
         raise SystemExit(f"--parquet-dir is not a directory: {args.parquet_dir}")
@@ -350,9 +301,15 @@ def main() -> None:
         tensor_parallel_size=args.tensor_parallel_size,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        top_p=args.top_p,
+        presence_penalty=args.presence_penalty,
+        frequency_penalty=args.frequency_penalty,
+        seed=args.seed,
+        top_k=args.top_k,
         token_limit=args.token_limit,
         dtype=args.dtype,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        chat_template_kwargs=chat_template_kwargs,
     )
     print("[init] model ready.\n")
 
@@ -421,7 +378,7 @@ def main() -> None:
             pool.clear()
 
             print(f"\n[batch] size={len(batch)}  (ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})")
-            contents = llm.batch_generate(batch)
+            contents = llm.batch_generate([r.messages for r in batch])
 
             for record, content in zip(batch, contents):
 

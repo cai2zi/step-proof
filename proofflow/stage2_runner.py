@@ -164,6 +164,15 @@ class Stage2Runner:
             self.args.formalizer_model_path,
             f"(tp={self.args.formalizer_tensor_parallel_size}, gpus={formalizer_gpus}) ...",
         )
+        chat_template_kwargs: Dict[str, Any] = {"enable_thinking": False}
+        if self.args.formalizer_chat_template_kwargs_json:
+            parsed = json.loads(self.args.formalizer_chat_template_kwargs_json)
+            if not isinstance(parsed, dict):
+                raise RuntimeError(
+                    "--formalizer-chat-template-kwargs-json must be a JSON object"
+                )
+            chat_template_kwargs = parsed
+
         self.formalizer = LLMWorkerClient(
             config=LLMWorkerConfig(
                 name="formalizer",
@@ -175,6 +184,12 @@ class Stage2Runner:
                 token_limit=self.args.formalizer_token_limit,
                 dtype=self.args.dtype,
                 gpu_memory_utilization=self.args.gpu_memory_utilization,
+                top_p=self.args.formalizer_top_p,
+                presence_penalty=self.args.formalizer_presence_penalty,
+                frequency_penalty=self.args.formalizer_frequency_penalty,
+                seed=self.args.formalizer_seed,
+                top_k=self.args.formalizer_top_k,
+                chat_template_kwargs=chat_template_kwargs,
             )
         )
         self.lean_server = LeanServer(project_path=self.args.mathlib_path)
@@ -569,7 +584,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--formalizer-tensor-parallel-size", type=int, default=DEFAULT_FORMALIZER_TP)
     parser.add_argument("--formalizer-max-tokens", type=int, default=8192)
     parser.add_argument("--formalizer-token-limit", type=int, default=32768)
-    parser.add_argument("--formalizer-temperature", type=float, default=0.2)
+    parser.add_argument("--formalizer-temperature", type=float, default=0.0)
+    parser.add_argument("--formalizer-top-p", type=float, default=1.0)
+    parser.add_argument("--formalizer-presence-penalty", type=float, default=0.0)
+    parser.add_argument("--formalizer-frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--formalizer-seed", type=int, default=42)
+    parser.add_argument("--formalizer-top-k", type=int, default=20)
+    parser.add_argument(
+        "--formalizer-chat-template-kwargs-json",
+        default=None,
+        help=(
+            'JSON object for tokenizer.apply_chat_template '
+            '(default: {"enable_thinking": false})'
+        ),
+    )
     parser.add_argument("--formalizer-retries", type=int, default=3)
     parser.add_argument("--form-batch-size", type=int, default=64)
     return parser

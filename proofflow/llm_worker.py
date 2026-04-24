@@ -4,8 +4,8 @@ import multiprocessing as mp
 import os
 import queue
 import traceback
-from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,14 @@ class LLMWorkerConfig:
     token_limit: int
     dtype: str
     gpu_memory_utilization: float
+    top_p: float = 1.0
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    seed: int = 42
+    top_k: int = 20
+    chat_template_kwargs: Dict[str, Any] = field(
+        default_factory=lambda: {"enable_thinking": False}
+    )
 
 
 def _worker_main(
@@ -37,9 +45,15 @@ def _worker_main(
             tensor_parallel_size=config.tensor_parallel_size,
             max_tokens=config.max_tokens,
             temperature=config.temperature,
+            top_p=config.top_p,
+            presence_penalty=config.presence_penalty,
+            frequency_penalty=config.frequency_penalty,
+            seed=config.seed,
+            top_k=config.top_k,
             token_limit=config.token_limit,
             dtype=config.dtype,
             gpu_memory_utilization=config.gpu_memory_utilization,
+            chat_template_kwargs=config.chat_template_kwargs,
         )
         response_queue.put(
             {

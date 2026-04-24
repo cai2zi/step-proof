@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+
+def default_chat_template_kwargs() -> Dict[str, Any]:
+    return {"enable_thinking": False}
 
 
 class LocalLLMManager:
@@ -11,19 +15,35 @@ class LocalLLMManager:
         model_path: str,
         tensor_parallel_size: int = 2,
         max_tokens: int = 8192,
-        temperature: float = 0.2,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        seed: int = 42,
+        top_k: int = 20,
         token_limit: int = 32768,
         dtype: str = "float16",
         gpu_memory_utilization: float = 0.9,
+        chat_template_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         from transformers import AutoTokenizer
         from vllm import LLM, SamplingParams
 
         self.model_path = model_path
         self.token_limit = token_limit
+        self._chat_template_kwargs: Dict[str, Any] = (
+            dict(chat_template_kwargs)
+            if chat_template_kwargs is not None
+            else default_chat_template_kwargs()
+        )
         self.sampling_params = SamplingParams(
             temperature=temperature,
+            top_p=top_p,
             max_tokens=max_tokens,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            seed=seed,
+            top_k=top_k,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.llm = LLM(
@@ -39,6 +59,7 @@ class LocalLLMManager:
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            **self._chat_template_kwargs,
         )
 
     def _token_count(self, prompt: str) -> int:

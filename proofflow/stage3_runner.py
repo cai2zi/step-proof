@@ -165,6 +165,15 @@ class Stage3Runner:
             self.args.prover_model_path,
             f"(tp={self.args.prover_tensor_parallel_size}, gpus={prover_gpus}) ...",
         )
+        chat_template_kwargs: Dict[str, Any] = {"enable_thinking": False}
+        if self.args.prover_chat_template_kwargs_json:
+            parsed = json.loads(self.args.prover_chat_template_kwargs_json)
+            if not isinstance(parsed, dict):
+                raise RuntimeError(
+                    "--prover-chat-template-kwargs-json must be a JSON object"
+                )
+            chat_template_kwargs = parsed
+
         self.prover = LLMWorkerClient(
             config=LLMWorkerConfig(
                 name="prover",
@@ -176,6 +185,12 @@ class Stage3Runner:
                 token_limit=self.args.prover_token_limit,
                 dtype=self.args.dtype,
                 gpu_memory_utilization=self.args.gpu_memory_utilization,
+                top_p=self.args.prover_top_p,
+                presence_penalty=self.args.prover_presence_penalty,
+                frequency_penalty=self.args.prover_frequency_penalty,
+                seed=self.args.prover_seed,
+                top_k=self.args.prover_top_k,
+                chat_template_kwargs=chat_template_kwargs,
             )
         )
         self.lean_server = LeanServer(project_path=self.args.mathlib_path)
@@ -550,7 +565,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prover-tensor-parallel-size", type=int, default=DEFAULT_PROVER_TP)
     parser.add_argument("--prover-max-tokens", type=int, default=8192)
     parser.add_argument("--prover-token-limit", type=int, default=32768)
-    parser.add_argument("--prover-temperature", type=float, default=0.2)
+    parser.add_argument("--prover-temperature", type=float, default=0.0)
+    parser.add_argument("--prover-top-p", type=float, default=1.0)
+    parser.add_argument("--prover-presence-penalty", type=float, default=0.0)
+    parser.add_argument("--prover-frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--prover-seed", type=int, default=42)
+    parser.add_argument("--prover-top-k", type=int, default=20)
+    parser.add_argument(
+        "--prover-chat-template-kwargs-json",
+        default=None,
+        help=(
+            'JSON object for tokenizer.apply_chat_template '
+            '(default: {"enable_thinking": false})'
+        ),
+    )
     parser.add_argument("--prover-retries", type=int, default=3)
     parser.add_argument("--prove-batch-size", type=int, default=64)
     return parser
