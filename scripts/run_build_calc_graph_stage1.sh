@@ -16,11 +16,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PROOF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${STEP_PROOF_ROOT}"
 
-PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
+PYTHON="${PYTHON:-/opt/conda/envs/lean4-czx/bin/python}"
 
 # ── 输入 ──────────────────────────────────────────────────────────────────
 # PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
-PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_2}"
+PARQUET_DIR="${PARQUET_DIR:-/workspace/mnt/lxb_work/czx_work/data_raw/ODA-extra}"
 PARQUET_GLOB="${PARQUET_GLOB:-*.parquet}"
 ID_COLUMN="${ID_COLUMN:-id}"
 QUESTION_COLUMN="${QUESTION_COLUMN:-question}"
@@ -33,7 +33,7 @@ SKIPPED_JSONL="${SKIPPED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/skipped.jsonl}"
 FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
 # ── vLLM ─────────────────────────────────────────────────────────────────
-MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
+MODEL_PATH="${MODEL_PATH:-/workspace/mnt/lxb_work/hf_dir/hf_model/Qwen/Qwen3-32B}"
 TP="${TP:-8}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
@@ -43,7 +43,7 @@ TEMPERATURE="${TEMPERATURE:-0.9}"
 TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
 
 # ── Batch / retry ─────────────────────────────────────────────────────────
-BATCH_SIZE="${BATCH_SIZE:-128}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-0}"
 

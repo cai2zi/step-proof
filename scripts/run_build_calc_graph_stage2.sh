@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PROOF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${STEP_PROOF_ROOT}"
 
-PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
+PYTHON="${PYTHON:-/opt/conda/envs/lean4-czx/bin/python}"
 
 INFILE="${INFILE:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
 OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage2/stage2_results.jsonl}"
