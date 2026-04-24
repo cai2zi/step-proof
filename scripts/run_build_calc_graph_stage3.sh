@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PROOF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${STEP_PROOF_ROOT}"
 
-PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
+PYTHON="${PYTHON:-/opt/conda/envs/lean4-czx/bin/python}"
 
 INFILE="${INFILE:-${STEP_PROOF_ROOT}/result_stage2/stage2_results.jsonl}"
 OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage3/stage3_results.jsonl}"
@@ -19,14 +19,14 @@ MATHLIB_PATH="${MATHLIB_PATH:-/data/czx/mathlib4}"
 LEAN_CHECK_CONCURRENCY="${LEAN_CHECK_CONCURRENCY:-64}"
 LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/result_stage3/lean_jobs}"
 
-GPUS="${GPUS:-4,5,6,7}"
+GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"
 ID_SCHEMA_MODE="${ID_SCHEMA_MODE:-calc}"
 BATCH_WAIT_MS="${BATCH_WAIT_MS:-200}"
 
 PROVER_MODEL_PATH="${PROVER_MODEL_PATH:-/data/czx/models/Goedel-Prover-V2-8B}"
-PROVER_TP="${PROVER_TP:-4}"
+PROVER_TP="${PROVER_TP:-8}"
 PROVER_MAX_TOKENS="${PROVER_MAX_TOKENS:-8192}"
 PROVER_TOKEN_LIMIT="${PROVER_TOKEN_LIMIT:-40960}"
 PROVER_TEMPERATURE="${PROVER_TEMPERATURE:-0.0}"
@@ -43,7 +43,7 @@ if [ -n "${PROVER_CHAT_TEMPLATE_KWARGS_JSON}" ]; then
 fi
 
 PROVER_RETRIES="${PROVER_RETRIES:-3}"
-PROVE_BATCH_SIZE="${PROVE_BATCH_SIZE:-64}"
+PROVE_BATCH_SIZE="${PROVE_BATCH_SIZE:-128}"
 
 exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage3.py" \
   --infile "${INFILE}" \

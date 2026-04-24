@@ -16,25 +16,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PROOF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${STEP_PROOF_ROOT}"
 
-PYTHON="${PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
+PYTHON="${PYTHON:-/opt/conda/envs/lean4-czx/bin/python}"
 
 # ── 输入 ──────────────────────────────────────────────────────────────────
-PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
+# PARQUET_DIR="${PARQUET_DIR:-/data/czx/data_raw/ODA-Math-460k/data_1}"
+PARQUET_DIR="${PARQUET_DIR:-/workspace/mnt/lxb_work/czx_work/data_raw/ODA-extra}"
 PARQUET_GLOB="${PARQUET_GLOB:-*.parquet}"
 ID_COLUMN="${ID_COLUMN:-id}"
 QUESTION_COLUMN="${QUESTION_COLUMN:-question}"
 RESPONSE_COLUMN="${RESPONSE_COLUMN:-response}"
-LIMIT="${LIMIT:--1}"
+LIMIT="${LIMIT:--10000}"
 
 # ── 输出 ──────────────────────────────────────────────────────────────────
 OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
 SKIPPED_JSONL="${SKIPPED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/skipped.jsonl}"
 FAILED_JSONL="${FAILED_JSONL:-${STEP_PROOF_ROOT}/result_stage1/failed.jsonl}"
 
-# ── vLLM（采样默认对齐 OpenAI extra_body：top_k + chat_template_kwargs）────
-MODEL_PATH="${MODEL_PATH:-/data/czx/models/Qwen3.5-9B}"
-TP="${TP:-4}"
-GPUS="${GPUS:-4,5,6,7}"
+# ── vLLM ─────────────────────────────────────────────────────────────────
+MODEL_PATH="${MODEL_PATH:-/workspace/mnt/lxb_work/hf_dir/hf_model/Qwen/Qwen3-32B}"
+TP="${TP:-8}"
+GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
 MAX_TOKENS="${MAX_TOKENS:-8192}"
@@ -54,16 +55,15 @@ if [ -n "${CHAT_TEMPLATE_KWARGS_JSON}" ]; then
 fi
 
 # ── Batch / retry ─────────────────────────────────────────────────────────
-BATCH_SIZE="${BATCH_SIZE:-128}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
-INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-1}"
+INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-0}"
 
-THINK_FLAG="--include-think-in-dag"
-case "${INCLUDE_THINK_IN_DAG,,}" in
-  0|false|no|off)
-    THINK_FLAG="--no-include-think-in-dag"
-    ;;
-esac
+# 仅支持 0/1：1 开启，其它值一律视为 0。
+THINK_FLAG="--no-include-think-in-dag"
+if [[ "${INCLUDE_THINK_IN_DAG}" == "1" ]]; then
+  THINK_FLAG="--include-think-in-dag"
+fi
 
 exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   --parquet-dir    "${PARQUET_DIR}" \
