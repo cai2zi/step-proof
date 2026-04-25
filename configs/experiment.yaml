@@ -8,6 +8,7 @@ run:
   stages: [stage1, stage2, stage3, stats, cot, viz]
   resume: true
   force: false
+  stream_logs_to_console: true
 
 stage1:
   parquet_dir: /workspace/mnt/lxb_work/czx_work/data_raw/ODA-extra
@@ -15,7 +16,7 @@ stage1:
   id_column: id
   question_column: question
   response_column: response
-  limit: 1000
+  limit: 100
   model_path: /workspace/mnt/lxb_work/hf_dir/hf_model/Qwen/Qwen3-32B
   tensor_parallel_size: 8
   gpus: 0,1,2,3,4,5,6,7

@@ -90,27 +90,8 @@ class Stage2Runner:
         self.done_ids: set[str] = set()
         self.formalizer: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
-        self.max_pending_validation_items = self._max_pending_validation_items()
-        self.validation_backpressure = asyncio.Semaphore(self.max_pending_validation_items)
-        self.validation_queue: asyncio.Queue[Tuple[StageSpec, StageTask, Optional[str]]] = (
-            asyncio.Queue()
-        )
-        self.validation_workers: List[asyncio.Task] = []
-        self.running_validation_items = 0
-        self.validation_error: Optional[BaseException] = None
+        self.pending_validation_tasks: set[asyncio.Task] = set()
         self.enqueue_seq = 0
-
-    def _max_pending_validation_items(self) -> int:
-        explicit = int(getattr(self.args, "max_pending_validation_items", 0) or 0)
-        if explicit > 0:
-            return explicit
-        return max(1, self.args.max_pending_validation_batches) * max(
-            1,
-            getattr(self.args, FORM_STAGE.batch_size_arg),
-        )
-
-    def _pending_validation_items(self) -> int:
-        return self.validation_queue.qsize() + self.running_validation_items
 
     def load_records(self) -> None:
         self.done_ids = set() if self.args.no_resume else load_done_ids(self.out_path)
@@ -426,18 +407,28 @@ class Stage2Runner:
         )
         return outputs
 
-    async def _validate_and_apply_one_output(
+    async def _validate_and_apply_stage_outputs(
         self,
         spec: StageSpec,
-        task: StageTask,
-        output: Optional[str],
+        tasks: List[StageTask],
+        outputs: List[Optional[str]],
     ) -> None:
-        result = await self._validate_batch_output(spec.name, task, output)
+        results = await asyncio.gather(
+            *[
+                self._validate_batch_output(spec.name, task, output)
+                for task, output in zip(tasks, outputs)
+            ]
+        )
+
+        dirty_record_ids: set[str] = set()
         async with self.state_lock:
-            record = self.records[task["record_id"]]
-            node = record["nodes"][task["node_id"]]
-            await self._apply_form_result_locked(record, node, task, result)
-            await self._persist_record_locked(task["record_id"])
+            for task, result in zip(tasks, results):
+                record = self.records[task["record_id"]]
+                node = record["nodes"][task["node_id"]]
+                dirty_record_ids.add(task["record_id"])
+                await self._apply_form_result_locked(record, node, task, result)
+            for record_id in sorted(dirty_record_ids):
+                await self._persist_record_locked(record_id)
 
     async def _run_stage_batch(
         self,
@@ -449,43 +440,41 @@ class Stage2Runner:
             return
 
         outputs = await self._generate_stage_outputs(spec, tasks)
-        for task, output in zip(tasks, outputs):
-            await self.validation_backpressure.acquire()
-            await self.validation_queue.put((spec, task, output))
+        validation_task = asyncio.create_task(
+            self._validate_and_apply_stage_outputs(spec, tasks, outputs)
+        )
+        self.pending_validation_tasks.add(validation_task)
 
-    def _raise_validation_error(self) -> None:
-        if self.validation_error is not None:
-            raise RuntimeError("Lean validation worker failed") from self.validation_error
+    def _consume_finished_validation_tasks(self) -> None:
+        finished = {task for task in self.pending_validation_tasks if task.done()}
+        for task in finished:
+            self.pending_validation_tasks.remove(task)
+            task.result()
 
-    async def _validation_worker(self, worker_id: int) -> None:
-        while True:
-            spec, task, output = await self.validation_queue.get()
-            self.running_validation_items += 1
-            try:
-                await self._validate_and_apply_one_output(spec, task, output)
-            except Exception as e:
-                self.validation_error = e
-            finally:
-                self.running_validation_items -= 1
-                self.validation_queue.task_done()
-                self.validation_backpressure.release()
-
-    def _start_validation_workers(self) -> None:
-        if self.validation_workers:
+    async def _wait_for_validation_progress(self) -> None:
+        if not self.pending_validation_tasks:
             return
-        worker_count = max(1, self.args.lean_check_concurrency)
-        self.validation_workers = [
-            asyncio.create_task(self._validation_worker(worker_id))
-            for worker_id in range(worker_count)
-        ]
+        done, _ = await asyncio.wait(
+            self.pending_validation_tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            self.pending_validation_tasks.remove(task)
+            task.result()
+        self._consume_finished_validation_tasks()
 
-    async def _cancel_validation_workers(self) -> None:
-        if not self.validation_workers:
+    async def _wait_for_validation_slot(self) -> None:
+        max_pending = max(1, self.args.max_pending_validation_batches)
+        while len(self.pending_validation_tasks) >= max_pending:
+            await self._wait_for_validation_progress()
+
+    async def _cancel_pending_validation_tasks(self) -> None:
+        if not self.pending_validation_tasks:
             return
-        for worker in self.validation_workers:
-            worker.cancel()
-        await asyncio.gather(*self.validation_workers, return_exceptions=True)
-        self.validation_workers.clear()
+        for task in self.pending_validation_tasks:
+            task.cancel()
+        await asyncio.gather(*self.pending_validation_tasks, return_exceptions=True)
+        self.pending_validation_tasks.clear()
 
     async def _apply_form_result_locked(
         self,
@@ -550,7 +539,8 @@ class Stage2Runner:
 
     async def _form_worker(self) -> None:
         while True:
-            self._raise_validation_error()
+            self._consume_finished_validation_tasks()
+            await self._wait_for_validation_slot()
             batch = await self._pop_batch(
                 self._queue_for(FORM_STAGE),
                 getattr(self.args, FORM_STAGE.batch_size_arg),
@@ -558,7 +548,7 @@ class Stage2Runner:
             if batch:
                 print(
                     f"[form] gpu_batch={len(batch)} "
-                    f"pending_validation_items={self._pending_validation_items()} "
+                    f"pending_validation_batches={len(self.pending_validation_tasks)} "
                     f"ready_queue={self._queue_for(FORM_STAGE).qsize()}"
                 )
                 await self._run_stage_batch(FORM_STAGE, batch)
@@ -567,9 +557,12 @@ class Stage2Runner:
                 records_terminal = all(
                     stage2_record_terminal(record) for record in self.records.values()
                 )
-                if records_terminal and self._pending_validation_items() == 0:
+                if records_terminal and not self.pending_validation_tasks:
                     return
-            await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
+            if self.pending_validation_tasks:
+                await self._wait_for_validation_progress()
+            else:
+                await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
 
     async def run(self) -> None:
         if self.args.no_resume:
@@ -591,7 +584,6 @@ class Stage2Runner:
 
         await self.init_runtime()
         await self.seed_ready_queues()
-        self._start_validation_workers()
         try:
             await asyncio.gather(
                 self._form_worker(),
@@ -606,7 +598,7 @@ class Stage2Runner:
             )
             raise
         finally:
-            await self._cancel_validation_workers()
+            await self._cancel_pending_validation_tasks()
             if self.formalizer is not None:
                 self.formalizer.close()
 

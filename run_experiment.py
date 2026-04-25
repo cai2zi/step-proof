@@ -58,6 +58,11 @@ def _count_jsonl(path: Path) -> int:
         return sum(1 for line in f if line.strip())
 
 
+def _stage1_done_count(graphs_jsonl: Path) -> int:
+    """Count already completed stage1 records from output JSONL."""
+    return _count_jsonl(graphs_jsonl)
+
+
 def _write_json(path: Path, payload: JsonDict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -152,6 +157,7 @@ class ExperimentRunner:
     def _run_command(self, stage: str, cmd: List[str]) -> None:
         log_path = self.logs_dir / f"{stage}.log"
         started_at = _utc_now_iso()
+        stream_to_console = bool(self.cfg.run.stream_logs_to_console)
         status = {
             "command": cmd,
             "log_path": str(log_path),
@@ -160,25 +166,36 @@ class ExperimentRunner:
         }
         self._update_status(stage, status)
         with open(log_path, "w", encoding="utf-8") as log_f:
-            log_f.write("$ " + " ".join(cmd) + "\n\n")
+            cmd_line = "$ " + " ".join(cmd)
+            log_f.write(cmd_line + "\n\n")
             log_f.flush()
-            result = subprocess.run(
+            if stream_to_console:
+                print(f"[{stage}] {cmd_line}", flush=True)
+            process = subprocess.Popen(
                 cmd,
                 cwd=self.repo_root,
-                stdout=log_f,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
             )
+            assert process.stdout is not None
+            for line in process.stdout:
+                log_f.write(line)
+                if stream_to_console:
+                    print(line, end="", flush=True)
+            process.wait()
+            result_code = process.returncode
         ended_at = _utc_now_iso()
         status.update(
             {
                 "ended_at": ended_at,
-                "exit_code": result.returncode,
+                "exit_code": result_code,
             }
         )
         self._update_status(stage, status)
-        if result.returncode != 0:
-            raise RuntimeError(f"{stage} failed with exit code {result.returncode}; see {log_path}")
+        if result_code != 0:
+            raise RuntimeError(f"{stage} failed with exit code {result_code}; see {log_path}")
 
     def run(self) -> None:
         stages = set(str(stage) for stage in self.cfg.run.stages)
@@ -198,8 +215,22 @@ class ExperimentRunner:
 
     def run_stage1(self) -> None:
         cfg = self.cfg.stage1
+        graphs_out = self.stage1_dir / "graphs.jsonl"
+        requested_limit = int(cfg.limit)
+        effective_limit = requested_limit
+        existing_done = 0
+        if requested_limit >= 0 and bool(self.cfg.run.resume):
+            existing_done = _stage1_done_count(graphs_out)
+            effective_limit = max(requested_limit - existing_done, 0)
+
+        print(
+            f"[stage1] limit_requested={requested_limit} "
+            f"existing_done={existing_done} effective_new_limit={effective_limit}",
+            flush=True,
+        )
         cmd = [
             self.python,
+            "-u",
             str(self.repo_root / "build_calc_graph_stage1.py"),
             "--parquet-dir",
             _cmd_value(cfg.parquet_dir),
@@ -212,9 +243,9 @@ class ExperimentRunner:
             "--response-column",
             _cmd_value(cfg.response_column),
             "--limit",
-            _cmd_value(cfg.limit),
+            str(effective_limit),
             "--out",
-            str(self.stage1_dir / "graphs.jsonl"),
+            str(graphs_out),
             "--skipped",
             str(self.stage1_dir / "skipped.jsonl"),
             "--failed",
@@ -269,6 +300,7 @@ class ExperimentRunner:
         cfg = self.cfg.stage2
         cmd = [
             self.python,
+            "-u",
             str(self.repo_root / "build_calc_graph_stage2.py"),
             "--infile",
             str(self.stage1_dir / "graphs.jsonl"),
@@ -336,6 +368,7 @@ class ExperimentRunner:
         cfg = self.cfg.stage3
         cmd = [
             self.python,
+            "-u",
             str(self.repo_root / "build_calc_graph_stage3.py"),
             "--infile",
             str(self.stage2_dir / "stage2_results.jsonl"),
@@ -402,6 +435,7 @@ class ExperimentRunner:
     def run_stats(self) -> None:
         cmd = [
             self.python,
+            "-u",
             str(self.repo_root / "check_stage3_fully_verified.py"),
             "--stage3-jsonl",
             str(self.stage3_dir / "stage3_results.jsonl"),
@@ -436,6 +470,7 @@ class ExperimentRunner:
     def run_cot(self) -> None:
         cmd = [
             self.python,
+            "-u",
             str(self.repo_root / "collect_cot_traces.py"),
             "--stage2-jsonl",
             str(self.stage2_dir / "stage2_results.jsonl"),
@@ -467,6 +502,7 @@ class ExperimentRunner:
             out_dir = self.viz_dir / bucket_label
             cmd = [
                 self.python,
+                "-u",
                 str(self.repo_root / "visualize_calc_graph_stage2.py"),
                 "--stage2-jsonl",
                 str(self.stage3_dir / "stage3_results.jsonl"),
