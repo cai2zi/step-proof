@@ -18,14 +18,18 @@ SOURCE="results"   # results | graph
 GRAPH_ONLY="0"     # 1 => 使用 graph-only 视图
 SEED="42"
 
-# MODE: random | ids
-MODE="ids"
+# MODE: random | ids | stats_bucket
+MODE="stats_bucket"
 
 # MODE=random 时使用
 RANDOM_N="3"
 
 # MODE=ids 时使用（逗号分隔）
 RECORD_IDS="16,6,11,82,91,107,118,124,63"
+
+# MODE=stats_bucket 时使用（从 stage3_verify_stats.json 读取各桶 top5 id）
+STAGE3_STATS_JSON="${STEP_PROOF_ROOT}/result_stage3/stage3_verify_stats.json"
+PROVE_RATIO_BUCKETS="100%,90-100%"
 # ──────────────────────────────────────────────────────────────────────────
 
 EXTRA_ARGS=()
@@ -33,8 +37,11 @@ if [[ "${MODE}" == "ids" ]]; then
   EXTRA_ARGS+=(--record-ids "${RECORD_IDS}")
 elif [[ "${MODE}" == "random" ]]; then
   EXTRA_ARGS+=(--random-n "${RANDOM_N}")
+elif [[ "${MODE}" == "stats_bucket" ]]; then
+  EXTRA_ARGS+=(--stage3-stats-json "${STAGE3_STATS_JSON}")
+  EXTRA_ARGS+=(--prove-ratio-buckets "${PROVE_RATIO_BUCKETS}")
 else
-  echo "Invalid MODE: ${MODE}. Expected 'random' or 'ids'." >&2
+  echo "Invalid MODE: ${MODE}. Expected 'random', 'ids', or 'stats_bucket'." >&2
   exit 1
 fi
 

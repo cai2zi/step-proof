@@ -52,31 +52,69 @@ def _parse_record_ids(values: List[str]) -> List[str]:
     return dedup
 
 
+def _parse_bucket_labels(values: List[str]) -> List[str]:
+    return _parse_record_ids(values)
+
+
+def _load_ids_from_stage3_stats(stats_json: Path, buckets: List[str]) -> List[str]:
+    if not stats_json.is_file():
+        raise SystemExit(f"stage3 stats JSON not found: {stats_json}")
+    payload = json.loads(stats_json.read_text(encoding="utf-8"))
+    bucket_to_ids = payload.get("prove_verify_ratio_distribution_top5_ids")
+    if not isinstance(bucket_to_ids, dict):
+        raise SystemExit(
+            "Invalid stage3 stats JSON: missing prove_verify_ratio_distribution_top5_ids"
+        )
+
+    missing = [bucket for bucket in buckets if bucket not in bucket_to_ids]
+    if missing:
+        raise SystemExit(f"bucket not found in stage3 stats JSON: {missing}")
+
+    selected: List[str] = []
+    for bucket in buckets:
+        ids = bucket_to_ids.get(bucket)
+        if not isinstance(ids, list):
+            raise SystemExit(f"Invalid bucket entry for {bucket}: expected id list")
+        for rid in ids:
+            rid_str = str(rid).strip()
+            if rid_str:
+                selected.append(rid_str)
+    return _parse_record_ids(selected)
+
+
 def _select_records(
     rows: List[Dict[str, Any]],
     random_n: int,
     record_ids: List[str],
+    stats_bucket_ids: List[str],
     seed: int,
 ) -> List[Dict[str, Any]]:
     if not rows:
         raise SystemExit("JSONL is empty.")
 
-    if random_n > 0 and record_ids:
-        raise SystemExit("Only one selection mode is allowed: --random-n OR --record-ids")
+    mode_count = int(random_n > 0) + int(bool(record_ids)) + int(bool(stats_bucket_ids))
+    if mode_count > 1:
+        raise SystemExit(
+            "Only one selection mode is allowed: "
+            "--random-n OR --record-ids OR --prove-ratio-buckets"
+        )
 
-    if record_ids:
+    selected_ids = record_ids if record_ids else stats_bucket_ids
+    if selected_ids:
         id_map: Dict[str, Dict[str, Any]] = {}
         for rec in rows:
             rid = _get_record_id(rec)
             if rid:
                 id_map[rid] = rec
-        missing = [rid for rid in record_ids if rid not in id_map]
+        missing = [rid for rid in selected_ids if rid not in id_map]
         if missing:
             raise SystemExit(f"record_id not found: {missing}")
-        return [id_map[rid] for rid in record_ids]
+        return [id_map[rid] for rid in selected_ids]
 
     if random_n <= 0:
-        raise SystemExit("Please provide --random-n (>0) or --record-ids")
+        raise SystemExit(
+            "Please provide --random-n (>0), --record-ids, or --prove-ratio-buckets"
+        )
     if random_n > len(rows):
         raise SystemExit(f"--random-n={random_n} exceeds total rows={len(rows)}")
     rng = random.Random(seed)
@@ -166,6 +204,21 @@ def main() -> None:
         help="Specific record_id list (supports space or comma separation)",
     )
     parser.add_argument(
+        "--stage3-stats-json",
+        type=Path,
+        default=Path(__file__).resolve().parent / "result_stage3" / "stage3_verify_stats.json",
+        help="Path to stage3_verify_stats.json",
+    )
+    parser.add_argument(
+        "--prove-ratio-buckets",
+        nargs="*",
+        default=[],
+        help=(
+            "Read ids from prove_verify_ratio_distribution_top5_ids by bucket labels "
+            "(supports space or comma separation, e.g. 90-100% or 100%)"
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -195,10 +248,19 @@ def main() -> None:
 
     rows = _load_jsonl(args.stage2_jsonl)
     record_ids = _parse_record_ids(args.record_ids)
+    bucket_labels = _parse_bucket_labels(args.prove_ratio_buckets)
+    stats_bucket_ids = []
+    if bucket_labels:
+        stats_bucket_ids = _load_ids_from_stage3_stats(args.stage3_stats_json, bucket_labels)
+        if not stats_bucket_ids:
+            raise SystemExit(
+                "No record ids found for the selected --prove-ratio-buckets in stage3 stats JSON."
+            )
     selected = _select_records(
         rows=rows,
         random_n=args.random_n,
         record_ids=record_ids,
+        stats_bucket_ids=stats_bucket_ids,
         seed=args.seed,
     )
 
