@@ -90,8 +90,8 @@ class Stage2Runner:
         self.done_ids: set[str] = set()
         self.formalizer: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
-        self.max_pending_validation_items = self._max_pending_validation_items()
-        self.validation_backpressure = asyncio.Semaphore(self.max_pending_validation_items)
+        self.validation_backpressure_limit = self._validation_backpressure_limit()
+        self.validation_backpressure = asyncio.Semaphore(self.validation_backpressure_limit)
         self.validation_queue: asyncio.Queue[Tuple[StageSpec, StageTask, Optional[str]]] = (
             asyncio.Queue()
         )
@@ -100,10 +100,7 @@ class Stage2Runner:
         self.validation_error: Optional[BaseException] = None
         self.enqueue_seq = 0
 
-    def _max_pending_validation_items(self) -> int:
-        explicit = int(getattr(self.args, "max_pending_validation_items", 0) or 0)
-        if explicit > 0:
-            return explicit
+    def _validation_backpressure_limit(self) -> int:
         return max(1, self.args.max_pending_validation_batches) * max(
             1,
             getattr(self.args, FORM_STAGE.batch_size_arg),
@@ -663,16 +660,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--max-pending-validation-batches",
         type=int,
         default=4,
-        help=(
-            "Compatibility fallback for validation backlog. Used as "
-            "batch_count * form_batch_size when --max-pending-validation-items <= 0."
-        ),
-    )
-    parser.add_argument(
-        "--max-pending-validation-items",
-        type=int,
-        default=0,
-        help="Max generated samples allowed to wait for Lean validation; <=0 derives from batches.",
+        help="Max generated form batches allowed to wait for Lean validation.",
     )
 
     parser.add_argument("--formalizer-model-path", default=DEFAULT_FORMALIZER_MODEL_PATH)

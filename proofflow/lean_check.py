@@ -2,6 +2,7 @@ import ast
 import asyncio
 import os
 import re
+import signal
 import subprocess
 import uuid
 from pathlib import Path
@@ -319,9 +320,20 @@ async def verify_lean_lemma_local_async(
         job_id=job_id,
     )
     full_code = f"{LEAN_LIBRARIES}\n\n{lean_string}" if add_imports else lean_string
+    proc = None
 
     try:
         temp_file_path.write_text(full_code, encoding="utf-8")
+
+        proc_kwargs = {
+            "cwd": project_path,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if os.name == "nt":
+            proc_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            proc_kwargs["start_new_session"] = True
 
         proc = await asyncio.create_subprocess_exec(
             "lake",
@@ -329,9 +341,7 @@ async def verify_lean_lemma_local_async(
             "lean",
             str(temp_file_path),
             "--json",
-            cwd=project_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            **proc_kwargs,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         stdout_text = stdout.decode("utf-8", errors="replace")
@@ -356,6 +366,15 @@ async def verify_lean_lemma_local_async(
             "Lean executable not found. Make sure it's in your system's PATH.",
         )
     except asyncio.TimeoutError:
+        if proc is not None and proc.returncode is None:
+            try:
+                if os.name == "nt":
+                    proc.kill()
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await proc.wait()
         return False, False, f"Verification timed out after {timeout} seconds."
     except Exception as e:
         return False, False, f"Verification failed with exception: {e}"
