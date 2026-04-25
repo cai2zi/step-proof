@@ -49,7 +49,6 @@ stage2:
   id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  max_pending_validation_items: 0
   formalizer_model_path: /workspace/mnt/lxb_work/czx_work/models/Goedel-Formalizer-V2-8B
   formalizer_tensor_parallel_size: 8
   formalizer_max_tokens: 8192
@@ -75,7 +74,6 @@ stage3:
   id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  max_pending_validation_items: 0
   prover_model_path: /workspace/mnt/lxb_work/czx_work/models/Goedel-Prover-V2-8B
   prover_tensor_parallel_size: 8
   prover_max_tokens: 8192

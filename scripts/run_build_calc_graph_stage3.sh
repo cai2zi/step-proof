@@ -25,7 +25,6 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
 ID_SCHEMA_MODE="${ID_SCHEMA_MODE:-calc}"
 BATCH_WAIT_MS="${BATCH_WAIT_MS:-200}"
 MAX_PENDING_VALIDATION_BATCHES="${MAX_PENDING_VALIDATION_BATCHES:-4}"
-MAX_PENDING_VALIDATION_ITEMS="${MAX_PENDING_VALIDATION_ITEMS:-0}"
 
 # PROVER_MODEL_PATH="${PROVER_MODEL_PATH:-/workspace/mnt/lxb_work/czx_work/models/Goedel-Prover-V2-32B}"
 PROVER_MODEL_PATH="${PROVER_MODEL_PATH:-/workspace/mnt/lxb_work/czx_work/models/Goedel-Prover-V2-8B}"
@@ -64,7 +63,6 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage3.py" \
   --id-schema-mode "${ID_SCHEMA_MODE}" \
   --batch-wait-ms "${BATCH_WAIT_MS}" \
   --max-pending-validation-batches "${MAX_PENDING_VALIDATION_BATCHES}" \
-  --max-pending-validation-items "${MAX_PENDING_VALIDATION_ITEMS}" \
   --prover-model-path "${PROVER_MODEL_PATH}" \
   --prover-tensor-parallel-size "${PROVER_TP}" \
   --prover-max-tokens "${PROVER_MAX_TOKENS}" \
