@@ -95,6 +95,12 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "result_stage3" / "stage3_verify_stats.json",
         help="Path to save statistics JSON output.",
     )
+    parser.add_argument(
+        "--top-n-per-bucket",
+        type=int,
+        default=5,
+        help="Number of record_ids to keep for each prove-verify ratio bucket.",
+    )
     args = parser.parse_args()
 
     if not args.stage3_jsonl.is_file():
@@ -228,6 +234,10 @@ def main() -> None:
         "global_prove_verified_nodes_ratio": round(prove_global_ratio, 6),
         "global_form_verified_nodes": total_form_verified_nodes,
         "global_form_verified_nodes_ratio": round(form_global_ratio, 6),
+        "prove_verify_ratio_distribution_top_ids": {
+            key: ids[: max(args.top_n_per_bucket, 0)]
+            for key, ids in prove_bucket_ids.items()
+        },
         "prove_verify_ratio_distribution_top5_ids": {
             key: ids[:5] for key, ids in prove_bucket_ids.items()
         },
@@ -240,10 +250,10 @@ def main() -> None:
     print(f"stats_json_saved_to: {args.out_json}")
 
     if args.show_ids:
-        print("prove_verify_ratio_distribution_by_record top5 ids:")
+        print(f"prove_verify_ratio_distribution_by_record top{args.top_n_per_bucket} ids:")
         for key in _bucket_order():
-            top5 = prove_bucket_ids[key][:5]
-            joined = ", ".join(top5) if top5 else "(none)"
+            top_ids = prove_bucket_ids[key][: max(args.top_n_per_bucket, 0)]
+            joined = ", ".join(top_ids) if top_ids else "(none)"
             print(f"  {key}: {joined}")
 
 

@@ -60,10 +60,12 @@ def _load_ids_from_stage3_stats(stats_json: Path, buckets: List[str]) -> List[st
     if not stats_json.is_file():
         raise SystemExit(f"stage3 stats JSON not found: {stats_json}")
     payload = json.loads(stats_json.read_text(encoding="utf-8"))
-    bucket_to_ids = payload.get("prove_verify_ratio_distribution_top5_ids")
+    bucket_to_ids = payload.get("prove_verify_ratio_distribution_top_ids")
+    if not isinstance(bucket_to_ids, dict):
+        bucket_to_ids = payload.get("prove_verify_ratio_distribution_top5_ids")
     if not isinstance(bucket_to_ids, dict):
         raise SystemExit(
-            "Invalid stage3 stats JSON: missing prove_verify_ratio_distribution_top5_ids"
+            "Invalid stage3 stats JSON: missing prove_verify_ratio_distribution_top_ids"
         )
 
     missing = [bucket for bucket in buckets if bucket not in bucket_to_ids]
