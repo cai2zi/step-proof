@@ -7,7 +7,7 @@ set -euo pipefail
 #   ./scripts/run_build_calc_graph_all_stages.sh
 #
 # 可选环境变量：
-#   SKIP_STAGE1=1   # 跳过 stage1
+SKIP_STAGE1=1   # 跳过 stage1
 #   SKIP_STAGE2=1   # 跳过 stage2
 #   SKIP_STAGE3=1   # 跳过 stage3
 

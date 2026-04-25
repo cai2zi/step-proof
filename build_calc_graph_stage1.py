@@ -172,6 +172,7 @@ def _build_payload(
     id_schema_mode: str,
     tries: int,
     include_think_in_dag: bool,
+    extraction_response: Optional[str],
 ) -> Dict[str, Any]:
     nodes = _serialize_graph_nodes(items, id_schema_mode)
     return {
@@ -189,6 +190,9 @@ def _build_payload(
         "input": {
             "problem": record.problem,
             "raw_cot": record.raw_cot,
+        },
+        "extraction": {
+            "raw_response": extraction_response,
         },
         "graph": {
             "nodes": nodes,
@@ -393,6 +397,9 @@ def main() -> None:
                             "problem": record.problem,
                             "raw_cot": record.raw_cot,
                         },
+                        "extraction": {
+                            "raw_response": None,
+                        },
                     }, ensure_ascii=False) + "\n")
                     skipped_f.flush()
                     stats["skipped"] += 1
@@ -416,6 +423,7 @@ def main() -> None:
                         args.id_schema_mode,
                         record.retry_count + 1,
                         args.include_think_in_dag,
+                        content,
                     )
                     graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     graphs_f.flush()
@@ -445,6 +453,7 @@ def main() -> None:
                             args.id_schema_mode,
                             record.retry_count + 1,
                             args.include_think_in_dag,
+                            content,
                         )
                         graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                         graphs_f.flush()
@@ -460,6 +469,9 @@ def main() -> None:
                             "input": {
                                 "problem": record.problem,
                                 "raw_cot": record.raw_cot,
+                            },
+                            "extraction": {
+                                "raw_response": content,
                             },
                         }, ensure_ascii=False) + "\n")
                         failed_f.flush()
