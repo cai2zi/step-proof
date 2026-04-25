@@ -90,6 +90,7 @@ class Stage2Runner:
         self.done_ids: set[str] = set()
         self.formalizer: Optional[LLMWorkerClient] = None
         self.lean_server: Optional[LeanServer] = None
+        self.pending_validation_tasks: set[asyncio.Task] = set()
         self.enqueue_seq = 0
 
     def load_records(self) -> None:
@@ -362,13 +363,11 @@ class Stage2Runner:
                 break
         return [(record_id, node_id) for _, record_id, node_id in items]
 
-    async def _run_stage_batch(
+    async def _prepare_stage_batch(
         self,
         spec: StageSpec,
         batch_items: List[Tuple[str, str]],
-    ) -> None:
-        llm = self._llm_for(spec)
-        assert llm is not None
+    ) -> List[StageTask]:
         tasks: List[StageTask] = []
         async with self.state_lock:
             for record_id, node_id in batch_items:
@@ -393,14 +392,27 @@ class Stage2Runner:
                         "attempt_num": attempt_num,
                     }
                 )
+        return tasks
 
-        if not tasks:
-            return
-
+    async def _generate_stage_outputs(
+        self,
+        spec: StageSpec,
+        tasks: List[StageTask],
+    ) -> List[Optional[str]]:
+        llm = self._llm_for(spec)
+        assert llm is not None
         outputs = await asyncio.to_thread(
             llm.generate,
             [task["messages"] for task in tasks],
         )
+        return outputs
+
+    async def _validate_and_apply_stage_outputs(
+        self,
+        spec: StageSpec,
+        tasks: List[StageTask],
+        outputs: List[Optional[str]],
+    ) -> None:
         results = await asyncio.gather(
             *[
                 self._validate_batch_output(spec.name, task, output)
@@ -417,6 +429,52 @@ class Stage2Runner:
                 await self._apply_form_result_locked(record, node, task, result)
             for record_id in sorted(dirty_record_ids):
                 await self._persist_record_locked(record_id)
+
+    async def _run_stage_batch(
+        self,
+        spec: StageSpec,
+        batch_items: List[Tuple[str, str]],
+    ) -> None:
+        tasks = await self._prepare_stage_batch(spec, batch_items)
+        if not tasks:
+            return
+
+        outputs = await self._generate_stage_outputs(spec, tasks)
+        validation_task = asyncio.create_task(
+            self._validate_and_apply_stage_outputs(spec, tasks, outputs)
+        )
+        self.pending_validation_tasks.add(validation_task)
+
+    def _consume_finished_validation_tasks(self) -> None:
+        finished = {task for task in self.pending_validation_tasks if task.done()}
+        for task in finished:
+            self.pending_validation_tasks.remove(task)
+            task.result()
+
+    async def _wait_for_validation_progress(self) -> None:
+        if not self.pending_validation_tasks:
+            return
+        done, _ = await asyncio.wait(
+            self.pending_validation_tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            self.pending_validation_tasks.remove(task)
+            task.result()
+        self._consume_finished_validation_tasks()
+
+    async def _wait_for_validation_slot(self) -> None:
+        max_pending = max(1, self.args.max_pending_validation_batches)
+        while len(self.pending_validation_tasks) >= max_pending:
+            await self._wait_for_validation_progress()
+
+    async def _cancel_pending_validation_tasks(self) -> None:
+        if not self.pending_validation_tasks:
+            return
+        for task in self.pending_validation_tasks:
+            task.cancel()
+        await asyncio.gather(*self.pending_validation_tasks, return_exceptions=True)
+        self.pending_validation_tasks.clear()
 
     async def _apply_form_result_locked(
         self,
@@ -481,17 +539,30 @@ class Stage2Runner:
 
     async def _form_worker(self) -> None:
         while True:
+            self._consume_finished_validation_tasks()
+            await self._wait_for_validation_slot()
             batch = await self._pop_batch(
                 self._queue_for(FORM_STAGE),
                 getattr(self.args, FORM_STAGE.batch_size_arg),
             )
             if batch:
-                print(f"[form] batch={len(batch)}")
+                print(
+                    f"[form] gpu_batch={len(batch)} "
+                    f"pending_validation_batches={len(self.pending_validation_tasks)} "
+                    f"ready_queue={self._queue_for(FORM_STAGE).qsize()}"
+                )
                 await self._run_stage_batch(FORM_STAGE, batch)
                 continue
             async with self.state_lock:
-                if all(stage2_record_terminal(record) for record in self.records.values()):
+                records_terminal = all(
+                    stage2_record_terminal(record) for record in self.records.values()
+                )
+                if records_terminal and not self.pending_validation_tasks:
                     return
+            if self.pending_validation_tasks:
+                await self._wait_for_validation_progress()
+            else:
+                await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
 
     async def run(self) -> None:
         if self.args.no_resume:
@@ -527,6 +598,7 @@ class Stage2Runner:
             )
             raise
         finally:
+            await self._cancel_pending_validation_tasks()
             if self.formalizer is not None:
                 self.formalizer.close()
 
@@ -579,6 +651,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--id-schema-mode", default="calc")
     parser.add_argument("--batch-wait-ms", type=int, default=200)
+    parser.add_argument(
+        "--max-pending-validation-batches",
+        type=int,
+        default=4,
+        help="Max generated batches allowed to wait for Lean validation.",
+    )
 
     parser.add_argument("--formalizer-model-path", default=DEFAULT_FORMALIZER_MODEL_PATH)
     parser.add_argument("--formalizer-tensor-parallel-size", type=int, default=DEFAULT_FORMALIZER_TP)

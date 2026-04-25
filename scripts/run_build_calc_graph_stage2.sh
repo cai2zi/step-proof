@@ -24,6 +24,7 @@ DTYPE="${DTYPE:-float16}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"
 ID_SCHEMA_MODE="${ID_SCHEMA_MODE:-calc}"
 BATCH_WAIT_MS="${BATCH_WAIT_MS:-200}"
+MAX_PENDING_VALIDATION_BATCHES="${MAX_PENDING_VALIDATION_BATCHES:-4}"
 
 FORMALIZER_MODEL_PATH="${FORMALIZER_MODEL_PATH:-/data/czx/models/Goedel-Formalizer-V2-8B}"
 FORMALIZER_TP="${FORMALIZER_TP:-8}"
@@ -59,6 +60,7 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage2.py" \
   --gpu-memory-utilization "${GPU_MEM_UTIL}" \
   --id-schema-mode "${ID_SCHEMA_MODE}" \
   --batch-wait-ms "${BATCH_WAIT_MS}" \
+  --max-pending-validation-batches "${MAX_PENDING_VALIDATION_BATCHES}" \
   --formalizer-model-path "${FORMALIZER_MODEL_PATH}" \
   --formalizer-tensor-parallel-size "${FORMALIZER_TP}" \
   --formalizer-max-tokens "${FORMALIZER_MAX_TOKENS}" \
