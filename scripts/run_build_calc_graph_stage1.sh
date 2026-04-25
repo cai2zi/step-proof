@@ -25,7 +25,7 @@ PARQUET_GLOB="${PARQUET_GLOB:-*.parquet}"
 ID_COLUMN="${ID_COLUMN:-id}"
 QUESTION_COLUMN="${QUESTION_COLUMN:-question}"
 RESPONSE_COLUMN="${RESPONSE_COLUMN:-response}"
-LIMIT="${LIMIT:--10000}"
+LIMIT="${LIMIT:-1000}"
 
 # ── 输出 ──────────────────────────────────────────────────────────────────
 OUT_JSONL="${OUT_JSONL:-${STEP_PROOF_ROOT}/result_stage1/graphs.jsonl}"
@@ -47,8 +47,8 @@ SEED="${SEED:-42}"
 TOP_K="${TOP_K:-20}"
 TOKEN_LIMIT="${TOKEN_LIMIT:-40960}"
 # 可选：覆盖 chat 模板参数，例如 CHAT_TEMPLATE_KWARGS_JSON='{"enable_thinking":true}'
-CHAT_TEMPLATE_KWARGS_JSON="${CHAT_TEMPLATE_KWARGS_JSON:-}"
-
+# CHAT_TEMPLATE_KWARGS_JSON="${CHAT_TEMPLATE_KWARGS_JSON:-}"
+CHAT_TEMPLATE_KWARGS_JSON="${CHAT_TEMPLATE_KWARGS_JSON:-{\"enable_thinking\":true}}"
 CHAT_KWARGS_ARGS=()
 if [ -n "${CHAT_TEMPLATE_KWARGS_JSON}" ]; then
   CHAT_KWARGS_ARGS=(--chat-template-kwargs-json "${CHAT_TEMPLATE_KWARGS_JSON}")
