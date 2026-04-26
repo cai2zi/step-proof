@@ -245,7 +245,12 @@ class Stage2Runner:
     ) -> List[Dict[str, str]]:
         if spec.name != "form":
             raise ValueError(f"Unsupported Stage 2 stage: {spec.name}")
-        return build_form_messages(record, node)
+        return build_form_messages(
+            record,
+            node,
+            include_parent_statement=bool(self.args.include_parent_statement),
+            include_parent_nl=bool(self.args.include_parent_nl),
+        )
 
     def _remaining_form_nodes(self, record_id: str) -> int:
         record = self.records[record_id]
@@ -708,6 +713,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--lean-check-concurrency", type=int, default=16)
     parser.add_argument("--lean-worker-pool-size", type=int, default=0)
+    parser.add_argument(
+        "--include-parent-statement",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include parent-node statement text in Stage 2 dependency context.",
+    )
+    parser.add_argument(
+        "--include-parent-nl",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include parent-node natural_language text in Stage 2 dependency context.",
+    )
     parser.add_argument(
         "--lean-temp-dir",
         type=Path,

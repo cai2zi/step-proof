@@ -380,6 +380,8 @@ class ExperimentRunner:
             _cmd_value(cfg.lean_check_concurrency),
             "--lean-worker-pool-size",
             _cmd_value(cfg.lean_worker_pool_size),
+            _bool_flag(bool(cfg.include_parent_statement), "include-parent-statement"),
+            _bool_flag(bool(cfg.include_parent_nl), "include-parent-nl"),
             "--lean-temp-dir",
             str(self.stage2_dir / "lean_jobs"),
             "--gpus",

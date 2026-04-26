@@ -45,6 +45,8 @@ stage2:
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
+  include_parent_statement: false
+  include_parent_nl: false
   gpus: 0,1,2,3,4,5,6,7
   dtype: float16
   gpu_memory_utilization: 0.95
