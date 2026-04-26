@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -99,6 +100,7 @@ class ExperimentRunner:
         self.cot_dir = self.exp_dir / "cot_traces"
         self.viz_dir = self.exp_dir / "visualizations"
         self.started_at = _utc_now_iso()
+        self.runtime_metrics_path = self.stats_dir / "stage_runtime_metrics.json"
 
     def prepare(self) -> None:
         self.exp_dir.mkdir(parents=True, exist_ok=True)
@@ -154,9 +156,52 @@ class ExperimentRunner:
         self.status[stage] = payload
         _write_json(self.status_path, self.status)
 
+    def _load_runtime_metrics(self) -> JsonDict:
+        if not self.runtime_metrics_path.is_file():
+            return {"stages": {}, "run": {}}
+        return json.loads(self.runtime_metrics_path.read_text(encoding="utf-8"))
+
+    def _update_runtime_metrics(self, stage: str, payload: JsonDict) -> None:
+        metrics = self._load_runtime_metrics()
+        metrics.setdefault("stages", {})
+        metrics["stages"][stage] = payload
+        _write_json(self.runtime_metrics_path, metrics)
+
+    def _merge_stage_detail_metrics(self, stage: str) -> None:
+        detail_path_map = {
+            "stage2": self.stats_dir / "stage2_runtime_stats.json",
+            "stage3": self.stats_dir / "stage3_runtime_stats.json",
+        }
+        detail_path = detail_path_map.get(stage)
+        if detail_path is None or not detail_path.is_file():
+            return
+        detail_payload = json.loads(detail_path.read_text(encoding="utf-8"))
+        metrics = self._load_runtime_metrics()
+        metrics.setdefault("stages", {})
+        stage_payload = metrics["stages"].get(stage, {})
+        if isinstance(stage_payload, dict):
+            stage_payload.update(detail_payload)
+            metrics["stages"][stage] = stage_payload
+            _write_json(self.runtime_metrics_path, metrics)
+
+    def _finalize_runtime_metrics(self) -> None:
+        metrics = self._load_runtime_metrics()
+        run_started = self.started_at
+        run_ended = _utc_now_iso()
+        duration_sum = 0.0
+        for stage_payload in metrics.get("stages", {}).values():
+            duration_sum += float(stage_payload.get("duration_seconds", 0.0) or 0.0)
+        metrics["run"] = {
+            "started_at": run_started,
+            "ended_at": run_ended,
+            "total_stage_duration_seconds": round(duration_sum, 6),
+        }
+        _write_json(self.runtime_metrics_path, metrics)
+
     def _run_command(self, stage: str, cmd: List[str]) -> None:
         log_path = self.logs_dir / f"{stage}.log"
         started_at = _utc_now_iso()
+        started_perf = time.perf_counter()
         stream_to_console = bool(self.cfg.run.stream_logs_to_console)
         status = {
             "command": cmd,
@@ -187,13 +232,27 @@ class ExperimentRunner:
             process.wait()
             result_code = process.returncode
         ended_at = _utc_now_iso()
+        duration_seconds = time.perf_counter() - started_perf
         status.update(
             {
                 "ended_at": ended_at,
                 "exit_code": result_code,
+                "duration_seconds": round(duration_seconds, 6),
             }
         )
         self._update_status(stage, status)
+        self._update_runtime_metrics(
+            stage,
+            {
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration_seconds, 6),
+                "exit_code": result_code,
+                "log_path": str(log_path),
+                "command": cmd,
+            },
+        )
+        self._merge_stage_detail_metrics(stage)
         if result_code != 0:
             raise RuntimeError(f"{stage} failed with exit code {result_code}; see {log_path}")
 
@@ -212,6 +271,7 @@ class ExperimentRunner:
         if "viz" in stages:
             self.run_viz()
         self._write_run_meta(ended=True)
+        self._finalize_runtime_metrics()
 
     def run_stage1(self) -> None:
         cfg = self.cfg.stage1
@@ -358,6 +418,8 @@ class ExperimentRunner:
             _cmd_value(cfg.formalizer_retries),
             "--form-batch-size",
             _cmd_value(cfg.form_batch_size),
+            "--metrics-out",
+            str(self.stats_dir / "stage2_runtime_stats.json"),
         ]
         chat_kwargs = _json_arg(cfg.formalizer_chat_template_kwargs)
         if chat_kwargs:
@@ -428,6 +490,8 @@ class ExperimentRunner:
             _cmd_value(cfg.prover_retries),
             "--prove-batch-size",
             _cmd_value(cfg.prove_batch_size),
+            "--metrics-out",
+            str(self.stats_dir / "stage3_runtime_stats.json"),
         ]
         chat_kwargs = _json_arg(cfg.prover_chat_template_kwargs)
         if chat_kwargs:

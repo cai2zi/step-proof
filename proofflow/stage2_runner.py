@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -100,6 +101,10 @@ class Stage2Runner:
         self.running_validation_items = 0
         self.validation_error: Optional[BaseException] = None
         self.enqueue_seq = 0
+        self.stage_started_perf: Optional[float] = None
+        self.gpu_idle_wait_seconds = 0.0
+        self.lean_compile_seconds = 0.0
+        self.lean_compile_count = 0
 
     def _validation_backpressure_limit(self) -> int:
         return max(1, self.args.max_pending_validation_batches) * max(
@@ -334,11 +339,15 @@ class Stage2Runner:
     ) -> Tuple[bool, bool, Any]:
         assert self.lean_server is not None
         async with self.lean_semaphore:
-            return await self.lean_server.check_lean_string_async(
+            started_perf = time.perf_counter()
+            result = await self.lean_server.check_lean_string_async(
                 lean_code,
                 temp_root=str(self.args.lean_temp_dir),
                 job_id=job_id,
             )
+        self.lean_compile_seconds += time.perf_counter() - started_perf
+        self.lean_compile_count += 1
+        return result
 
     async def _validate_batch_output(
         self,
@@ -378,10 +387,13 @@ class Stage2Runner:
         batch_size: int,
     ) -> List[Tuple[str, str]]:
         timeout = max(self.args.batch_wait_ms, 1) / 1000.0
+        wait_started_perf = time.perf_counter()
         try:
             first_item = await asyncio.wait_for(queue.get(), timeout=timeout)
         except asyncio.TimeoutError:
+            self.gpu_idle_wait_seconds += time.perf_counter() - wait_started_perf
             return []
+        self.gpu_idle_wait_seconds += time.perf_counter() - wait_started_perf
         items = [first_item]
         while len(items) < batch_size:
             try:
@@ -580,6 +592,7 @@ class Stage2Runner:
             await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
 
     async def run(self) -> None:
+        self.stage_started_perf = time.perf_counter()
         if self.args.no_resume:
             for path in (self.out_path, self.failed_path):
                 if path.exists():
@@ -619,9 +632,41 @@ class Stage2Runner:
                 await self.lean_server.aclose()
             if self.formalizer is not None:
                 self.formalizer.close()
+            self._write_runtime_metrics()
 
         done = sum(1 for record in self.records.values() if stage2_record_terminal(record))
         print(f"\n[done] completed={done} out={self.out_path} failed={self.failed_path}")
+
+    def _write_runtime_metrics(self) -> None:
+        if self.args.metrics_out is None:
+            return
+        total_seconds = 0.0
+        if self.stage_started_perf is not None:
+            total_seconds = time.perf_counter() - self.stage_started_perf
+        payload = {
+            "stage": "stage2",
+            "total_execution_seconds": round(total_seconds, 6),
+            "lean_compile": {
+                "total_seconds": round(self.lean_compile_seconds, 6),
+                "node_count": self.lean_compile_count,
+                "avg_seconds_per_node": round(
+                    self.lean_compile_seconds / self.lean_compile_count,
+                    6,
+                )
+                if self.lean_compile_count
+                else None,
+            },
+            "gpu_idle_wait": {
+                "total_seconds": round(self.gpu_idle_wait_seconds, 6),
+                "ratio_of_total": round(
+                    self.gpu_idle_wait_seconds / total_seconds,
+                    6,
+                )
+                if total_seconds > 0
+                else None,
+            },
+        }
+        write_json_atomic(self.args.metrics_out, payload)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -702,4 +747,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--formalizer-retries", type=int, default=3)
     parser.add_argument("--form-batch-size", type=int, default=64)
+    parser.add_argument(
+        "--metrics-out",
+        type=Path,
+        default=None,
+        help="Optional JSON file for stage runtime metrics.",
+    )
     return parser
