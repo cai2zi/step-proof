@@ -150,6 +150,9 @@ def empty_solver(skipped: bool = False) -> JsonDict:
 def build_dependency_context(
     node: NodeState,
     nodes: Dict[str, NodeState],
+    *,
+    include_parent_statement: bool = False,
+    include_parent_nl: bool = False,
 ) -> str:
     dependencies = list(node.get("dependencies") or [])
     if not dependencies:
@@ -166,15 +169,30 @@ def build_dependency_context(
         if dep is None:
             continue
         formalization = dep.get("formalization") or {}
+        extra_context_parts: List[str] = []
+        if include_parent_statement and dep.get("statement"):
+            extra_context_parts.append(
+                f'Dependency step {dep_id} statement: "{dep.get("statement", "")}"'
+            )
+        if include_parent_nl and dep.get("natural_language"):
+            extra_context_parts.append(
+                f'Dependency step {dep_id} natural language: "{dep.get("natural_language", "")}"'
+            )
         if formalization.get("lean_code") and formalization.get("lean_pass"):
             parts.append("\n")
             parts.append(remove_imports(formalization["lean_code"]))
+            if extra_context_parts:
+                parts.append("\n")
+                parts.append("\n".join(extra_context_parts))
         else:
             parts.append(
                 "\nDependency step "
                 f"{dep_id} is provided in natural language: \"{dep.get('statement', '')}\". "
                 "Please formalize it as part of your current lemma's hypotheses."
             )
+            if extra_context_parts:
+                parts.append("\n")
+                parts.append("\n".join(extra_context_parts))
 
     if not parts:
         return ""
@@ -190,10 +208,18 @@ def build_dependency_context(
 def build_form_messages(
     record: RecordState,
     node: NodeState,
+    *,
+    include_parent_statement: bool = False,
+    include_parent_nl: bool = False,
 ) -> List[Dict[str, str]]:
     role = role_of(node, record["meta"]["id_schema_mode"])
     lemma_header = f"theorem {node['id']}" if role == ROLE_FINAL else f"lemma {node['id']}"
-    dependency_context_block = build_dependency_context(node, record["nodes"])
+    dependency_context_block = build_dependency_context(
+        node,
+        record["nodes"],
+        include_parent_statement=include_parent_statement,
+        include_parent_nl=include_parent_nl,
+    )
     # Persist the exact context block used to build this form prompt.
     node["dependency_context_block"] = dependency_context_block
     return build_chat_messages(
