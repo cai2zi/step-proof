@@ -16,7 +16,9 @@ CHECKPOINT_DIR="${CHECKPOINT_DIR:-${STEP_PROOF_ROOT}/result_stage3/stage3_ckpt}"
 LIMIT="${LIMIT:--1}"
 
 MATHLIB_PATH="${MATHLIB_PATH:-/workspace/mnt/lxb_work/czx_work/mathlib4}"
+LEAN_BACKEND="${LEAN_BACKEND:-persistent_lsp}"
 LEAN_CHECK_CONCURRENCY="${LEAN_CHECK_CONCURRENCY:-100}"
+LEAN_WORKER_POOL_SIZE="${LEAN_WORKER_POOL_SIZE:-0}"
 LEAN_TEMP_DIR="${LEAN_TEMP_DIR:-${STEP_PROOF_ROOT}/result_stage3/lean_jobs}"
 
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
@@ -55,7 +57,9 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage3.py" \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
   --limit "${LIMIT}" \
   --mathlib-path "${MATHLIB_PATH}" \
+  --lean-backend "${LEAN_BACKEND}" \
   --lean-check-concurrency "${LEAN_CHECK_CONCURRENCY}" \
+  --lean-worker-pool-size "${LEAN_WORKER_POOL_SIZE}" \
   --lean-temp-dir "${LEAN_TEMP_DIR}" \
   --gpus "${GPUS}" \
   --dtype "${DTYPE}" \

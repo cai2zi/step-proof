@@ -42,7 +42,9 @@ stage1:
 
 stage2:
   mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
-  lean_check_concurrency: 100
+  lean_backend: persistent_lsp
+  lean_check_concurrency: 64
+  lean_worker_pool_size: 0
   gpus: 0,1,2,3,4,5,6,7
   dtype: float16
   gpu_memory_utilization: 0.95
@@ -67,7 +69,9 @@ stage2:
 
 stage3:
   mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
-  lean_check_concurrency: 100
+  lean_backend: persistent_lsp
+  lean_check_concurrency: 64
+  lean_worker_pool_size: 0
   gpus: 0,1,2,3,4,5,6,7
   dtype: float16
   gpu_memory_utilization: 0.95

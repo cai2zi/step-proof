@@ -43,6 +43,7 @@ DEFAULT_GPUS = os.getenv("STAGE2_GPUS", os.getenv("GRAPH_GPUS", "0,1,2,3"))
 DEFAULT_FORMALIZER_GPUS = os.getenv("FORMALIZER_GPUS", "")
 DEFAULT_FORMALIZER_TP = int(os.getenv("FORMALIZER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
+DEFAULT_LEAN_BACKEND = os.getenv("LEAN_BACKEND", "subprocess")
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,17 @@ class Stage2Runner:
                 chat_template_kwargs=chat_template_kwargs,
             )
         )
-        self.lean_server = LeanServer(project_path=self.args.mathlib_path)
+        pool_size = (
+            self.args.lean_worker_pool_size
+            if self.args.lean_worker_pool_size > 0
+            else self.args.lean_check_concurrency
+        )
+        self.lean_server = LeanServer(
+            project_path=self.args.mathlib_path,
+            backend=self.args.lean_backend,
+            pool_size=pool_size,
+            temp_root=str(self.args.lean_temp_dir),
+        )
         print("[init] stage2 runtime ready.\n")
 
     def _queue_for(
@@ -423,28 +434,18 @@ class Stage2Runner:
         )
         return outputs
 
-    async def _validate_and_apply_stage_outputs(
+    async def _validate_and_apply_one_output(
         self,
         spec: StageSpec,
-        tasks: List[StageTask],
-        outputs: List[Optional[str]],
+        task: StageTask,
+        output: Optional[str],
     ) -> None:
-        results = await asyncio.gather(
-            *[
-                self._validate_batch_output(spec.name, task, output)
-                for task, output in zip(tasks, outputs)
-            ]
-        )
-
-        dirty_record_ids: set[str] = set()
+        result = await self._validate_batch_output(spec.name, task, output)
         async with self.state_lock:
-            for task, result in zip(tasks, results):
-                record = self.records[task["record_id"]]
-                node = record["nodes"][task["node_id"]]
-                dirty_record_ids.add(task["record_id"])
-                await self._apply_form_result_locked(record, node, task, result)
-            for record_id in sorted(dirty_record_ids):
-                await self._persist_record_locked(record_id)
+            record = self.records[task["record_id"]]
+            node = record["nodes"][task["node_id"]]
+            await self._apply_form_result_locked(record, node, task, result)
+            await self._persist_record_locked(task["record_id"])
 
     async def _run_stage_batch(
         self,
@@ -456,41 +457,43 @@ class Stage2Runner:
             return
 
         outputs = await self._generate_stage_outputs(spec, tasks)
-        validation_task = asyncio.create_task(
-            self._validate_and_apply_stage_outputs(spec, tasks, outputs)
-        )
-        self.pending_validation_tasks.add(validation_task)
+        for task, output in zip(tasks, outputs):
+            await self.validation_backpressure.acquire()
+            await self.validation_queue.put((spec, task, output))
 
-    def _consume_finished_validation_tasks(self) -> None:
-        finished = {task for task in self.pending_validation_tasks if task.done()}
-        for task in finished:
-            self.pending_validation_tasks.remove(task)
-            task.result()
+    def _raise_validation_error(self) -> None:
+        if self.validation_error is not None:
+            raise RuntimeError("Lean validation worker failed") from self.validation_error
 
-    async def _wait_for_validation_progress(self) -> None:
-        if not self.pending_validation_tasks:
+    async def _validation_worker(self, worker_id: int) -> None:
+        while True:
+            spec, task, output = await self.validation_queue.get()
+            self.running_validation_items += 1
+            try:
+                await self._validate_and_apply_one_output(spec, task, output)
+            except Exception as e:
+                self.validation_error = e
+            finally:
+                self.running_validation_items -= 1
+                self.validation_queue.task_done()
+                self.validation_backpressure.release()
+
+    def _start_validation_workers(self) -> None:
+        if self.validation_workers:
             return
-        done, _ = await asyncio.wait(
-            self.pending_validation_tasks,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in done:
-            self.pending_validation_tasks.remove(task)
-            task.result()
-        self._consume_finished_validation_tasks()
+        worker_count = max(1, self.args.lean_check_concurrency)
+        self.validation_workers = [
+            asyncio.create_task(self._validation_worker(worker_id))
+            for worker_id in range(worker_count)
+        ]
 
-    async def _wait_for_validation_slot(self) -> None:
-        max_pending = max(1, self.args.max_pending_validation_batches)
-        while len(self.pending_validation_tasks) >= max_pending:
-            await self._wait_for_validation_progress()
-
-    async def _cancel_pending_validation_tasks(self) -> None:
-        if not self.pending_validation_tasks:
+    async def _cancel_validation_workers(self) -> None:
+        if not self.validation_workers:
             return
-        for task in self.pending_validation_tasks:
-            task.cancel()
-        await asyncio.gather(*self.pending_validation_tasks, return_exceptions=True)
-        self.pending_validation_tasks.clear()
+        for worker in self.validation_workers:
+            worker.cancel()
+        await asyncio.gather(*self.validation_workers, return_exceptions=True)
+        self.validation_workers.clear()
 
     async def _apply_form_result_locked(
         self,
@@ -555,8 +558,7 @@ class Stage2Runner:
 
     async def _form_worker(self) -> None:
         while True:
-            self._consume_finished_validation_tasks()
-            await self._wait_for_validation_slot()
+            self._raise_validation_error()
             batch = await self._pop_batch(
                 self._queue_for(FORM_STAGE),
                 getattr(self.args, FORM_STAGE.batch_size_arg),
@@ -564,7 +566,7 @@ class Stage2Runner:
             if batch:
                 print(
                     f"[form] gpu_batch={len(batch)} "
-                    f"pending_validation_batches={len(self.pending_validation_tasks)} "
+                    f"pending_validation_items={self._pending_validation_items()} "
                     f"ready_queue={self._queue_for(FORM_STAGE).qsize()}"
                 )
                 await self._run_stage_batch(FORM_STAGE, batch)
@@ -573,12 +575,9 @@ class Stage2Runner:
                 records_terminal = all(
                     stage2_record_terminal(record) for record in self.records.values()
                 )
-                if records_terminal and not self.pending_validation_tasks:
+                if records_terminal and self._pending_validation_items() == 0:
                     return
-            if self.pending_validation_tasks:
-                await self._wait_for_validation_progress()
-            else:
-                await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
+            await asyncio.sleep(max(self.args.batch_wait_ms, 1) / 1000.0)
 
     async def run(self) -> None:
         if self.args.no_resume:
@@ -600,6 +599,7 @@ class Stage2Runner:
 
         await self.init_runtime()
         await self.seed_ready_queues()
+        self._start_validation_workers()
         try:
             await asyncio.gather(
                 self._form_worker(),
@@ -614,7 +614,9 @@ class Stage2Runner:
             )
             raise
         finally:
-            await self._cancel_pending_validation_tasks()
+            await self._cancel_validation_workers()
+            if self.lean_server is not None:
+                await self.lean_server.aclose()
             if self.formalizer is not None:
                 self.formalizer.close()
 
@@ -654,7 +656,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-resume", action="store_true", help="Ignore prior outputs/checkpoints")
 
     parser.add_argument("--mathlib-path", default=DEFAULT_MATHLIB_PATH)
+    parser.add_argument(
+        "--lean-backend",
+        default=DEFAULT_LEAN_BACKEND,
+        choices=["subprocess", "persistent_lsp"],
+    )
     parser.add_argument("--lean-check-concurrency", type=int, default=16)
+    parser.add_argument("--lean-worker-pool-size", type=int, default=0)
     parser.add_argument(
         "--lean-temp-dir",
         type=Path,

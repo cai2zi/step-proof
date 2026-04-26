@@ -44,6 +44,7 @@ DEFAULT_GPUS = os.getenv(
 DEFAULT_PROVER_GPUS = os.getenv("PROVER_GPUS", "")
 DEFAULT_PROVER_TP = int(os.getenv("PROVER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
+DEFAULT_LEAN_BACKEND = os.getenv("LEAN_BACKEND", "subprocess")
 
 
 @dataclass(frozen=True)
@@ -210,7 +211,17 @@ class Stage3Runner:
                 chat_template_kwargs=chat_template_kwargs,
             )
         )
-        self.lean_server = LeanServer(project_path=self.args.mathlib_path)
+        pool_size = (
+            self.args.lean_worker_pool_size
+            if self.args.lean_worker_pool_size > 0
+            else self.args.lean_check_concurrency
+        )
+        self.lean_server = LeanServer(
+            project_path=self.args.mathlib_path,
+            backend=self.args.lean_backend,
+            pool_size=pool_size,
+            temp_root=str(self.args.lean_temp_dir),
+        )
         print("[init] stage3 runtime ready.\n")
 
     def _queue_for(
@@ -585,6 +596,8 @@ class Stage3Runner:
             raise
         finally:
             await self._cancel_validation_workers()
+            if self.lean_server is not None:
+                await self.lean_server.aclose()
             if self.prover is not None:
                 self.prover.close()
 
@@ -624,7 +637,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-resume", action="store_true", help="Ignore prior outputs/checkpoints")
 
     parser.add_argument("--mathlib-path", default=DEFAULT_MATHLIB_PATH)
+    parser.add_argument(
+        "--lean-backend",
+        default=DEFAULT_LEAN_BACKEND,
+        choices=["subprocess", "persistent_lsp"],
+    )
     parser.add_argument("--lean-check-concurrency", type=int, default=16)
+    parser.add_argument("--lean-worker-pool-size", type=int, default=0)
     parser.add_argument(
         "--lean-temp-dir",
         type=Path,
