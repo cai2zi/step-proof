@@ -144,7 +144,15 @@ def create_static_visualization(G, node_info, filename='proof_graph.png', dpi: i
     plt.close()
 
 
-def create_interactive_visualization(G, node_info, proof_str="", filename='proof_graph_interactive.html'):
+def create_interactive_visualization(
+    G,
+    node_info,
+    proof_str="",
+    filename='proof_graph_interactive.html',
+    compare_payload=None,
+    compare_fields=None,
+    compare_experiments=None,
+):
     """Create an interactive HTML visualization using pyvis with split screen layout."""
     
     # Process proof_str to handle escape sequences
@@ -236,6 +244,10 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
             'width': 2
         })
     
+    compare_payload = compare_payload or {}
+    compare_fields = compare_fields or []
+    compare_experiments = compare_experiments or []
+
     # Create custom HTML with split screen layout
     html_content = f"""
     <!DOCTYPE html>
@@ -383,6 +395,52 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                 padding: 15px;
                 margin-bottom: 15px;
                 border-radius: 4px;
+            }}
+
+            .compare-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 12px;
+            }}
+
+            .compare-card {{
+                background: #f8f9fa;
+                border: 1px solid #dbe4f0;
+                border-radius: 8px;
+                padding: 12px;
+            }}
+
+            .compare-card-title {{
+                font-weight: 700;
+                color: #2d3748;
+                margin-bottom: 10px;
+                font-size: 14px;
+            }}
+
+            .compare-field {{
+                margin-bottom: 10px;
+                background: #fff;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+            }}
+
+            .compare-field-name {{
+                font-size: 12px;
+                color: #5b6575;
+                padding: 8px 10px;
+                border-bottom: 1px solid #edf2f7;
+                text-transform: uppercase;
+                letter-spacing: 0.4px;
+            }}
+
+            .compare-field-value {{
+                color: #2d3748;
+                line-height: 1.5;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                font-family: 'Monaco', 'Courier New', monospace;
+                font-size: 12px;
+                padding: 10px;
             }}
             
             .field-name {{
@@ -625,6 +683,9 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
         <script type="text/javascript">
             // Store node information
             var nodeInfo = {json.dumps(node_info)};
+            var compareData = {json.dumps(compare_payload, ensure_ascii=False)};
+            var compareFields = {json.dumps(compare_fields, ensure_ascii=False)};
+            var compareExperiments = {json.dumps(compare_experiments, ensure_ascii=False)};
             
             // Create nodes and edges
             var nodes = new vis.DataSet({json.dumps(nodes_data)});
@@ -746,6 +807,46 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                 
                 return strValue;
             }}
+
+            function escapeHtml(value) {{
+                return String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }}
+
+            function renderCompareInfo(nodeId) {{
+                const info = nodeInfo[nodeId] || {{}};
+                const nodeCompare = compareData[nodeId] || {{}};
+                let html = '<div class="info-header">';
+                html += '<h2>' + escapeHtml(nodeId) + '</h2>';
+                html += '<div class="node-type">Comparison view across experiments</div>';
+                html += '</div>';
+                html += '<div class="compare-grid">';
+
+                for (const fieldName of compareFields) {{
+                    html += '<div class="compare-card">';
+                    html += '<div class="compare-card-title">' + escapeHtml(fieldName) + '</div>';
+                    for (const expName of compareExperiments) {{
+                        const expData = nodeCompare[expName] || {{}};
+                        const rawValue = Object.prototype.hasOwnProperty.call(expData, fieldName)
+                            ? expData[fieldName]
+                            : '';
+                        const text = rawValue === null || rawValue === undefined || rawValue === ''
+                            ? 'N/A'
+                            : (typeof rawValue === 'object' ? JSON.stringify(rawValue, null, 2) : String(rawValue));
+                        html += '<div class="compare-field">';
+                        html += '<div class="compare-field-name">' + escapeHtml(expName) + '</div>';
+                        html += '<div class="compare-field-value">' + escapeHtml(text) + '</div>';
+                        html += '</div>';
+                    }}
+                    html += '</div>';
+                }}
+                html += '</div>';
+                document.getElementById('info-content').innerHTML = html;
+            }}
             
             // Handle node click events
             network.on("click", function(params) {{
@@ -754,6 +855,10 @@ def create_interactive_visualization(G, node_info, proof_str="", filename='proof
                     var info = nodeInfo[nodeId];
                     
                     if (info) {{
+                        if (compareExperiments.length > 0 && compareFields.length > 0) {{
+                            renderCompareInfo(nodeId);
+                            return;
+                        }}
                         var html = '<div class="info-header">';
                         html += '<h2>' + nodeId + '</h2>';
                         var nodeType = info.type || 'unknown';

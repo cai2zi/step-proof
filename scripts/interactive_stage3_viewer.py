@@ -18,6 +18,13 @@ from proofflow.vis import (
 
 
 JsonDict = Dict[str, Any]
+COMPARE_FIELD_OPTIONS = [
+    ("natural_language", "Natural Language"),
+    ("statement", "Statement"),
+    ("formalization.lean_code", "Formalization.lean_code"),
+    ("formalization.dependency_context_block", "Formalization.dependency_context_block"),
+    ("solved_lemma.lean_code", "Solved_lemma.lean_code"),
+]
 
 
 def _remove_imports(lean_code: str) -> str:
@@ -127,6 +134,17 @@ def _build_proof_str(rec: JsonDict) -> str:
     return "\n".join(parts)
 
 
+def _get_nested_value(payload: JsonDict, field_path: str) -> Any:
+    current: Any = payload
+    for part in field_path.split("."):
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(part)
+        if current is None:
+            return ""
+    return current
+
+
 class ViewerApp:
     def __init__(self, repo_root: Path, results_root: Path, source: str, graph_only: bool) -> None:
         self.repo_root = repo_root
@@ -200,6 +218,60 @@ class ViewerApp:
                 )
         return out_path.read_text(encoding="utf-8")
 
+    def render_compare_html(
+        self,
+        exp_names: List[str],
+        record_id: str,
+        compare_fields: List[str],
+    ) -> str:
+        exp_names = [str(name).strip() for name in exp_names if str(name).strip()]
+        compare_fields = [str(name).strip() for name in compare_fields if str(name).strip()]
+        record_id = str(record_id).strip()
+        if not exp_names:
+            raise ValueError("exp_names is empty")
+        if not record_id:
+            raise ValueError("record_id is empty")
+        if not compare_fields:
+            raise ValueError("compare_fields is empty")
+
+        base_exp_name = exp_names[0]
+        base_rec = self._load_exp_records(base_exp_name).get(record_id)
+        if base_rec is None:
+            raise KeyError(f"record_id not found in {base_exp_name}: {record_id}")
+
+        nodes = _extract_nodes(base_rec, self.source)
+        G, node_info = build_dag(nodes)
+        compare_payload: Dict[str, Dict[str, Dict[str, Any]]] = {
+            node_id: {} for node_id in node_info.keys()
+        }
+
+        for exp_name in exp_names:
+            rec = self._load_exp_records(exp_name).get(record_id)
+            if rec is None:
+                raise KeyError(f"record_id not found in {exp_name}: {record_id}")
+            exp_nodes = _extract_nodes(rec, self.source)
+            exp_node_map = {str(node.get("id", "")).strip(): node for node in exp_nodes}
+            for node_id in compare_payload.keys():
+                node_payload = exp_node_map.get(node_id, {})
+                compare_payload[node_id][exp_name] = {
+                    field_name: _get_nested_value(node_payload, field_name)
+                    for field_name in compare_fields
+                }
+
+        out_path = self.cache_dir / f"compare__{'__'.join(exp_names)}__{record_id}.html"
+        with self._cache_lock:
+            proof_str = _build_proof_str(base_rec)
+            create_interactive_visualization(
+                G=G,
+                node_info=node_info,
+                proof_str=proof_str,
+                filename=str(out_path),
+                compare_payload=compare_payload,
+                compare_fields=compare_fields,
+                compare_experiments=exp_names,
+            )
+        return out_path.read_text(encoding="utf-8")
+
 
 def _html_page() -> str:
     return """<!doctype html>
@@ -225,11 +297,18 @@ def _html_page() -> str:
 <body>
   <div class="container">
     <div class="panel">
+      <div class="row"><strong>Experiments:</strong></div>
       <div class="row" id="expOptions"></div>
+      <div class="row" style="margin-top:8px;"><strong>Compare Fields:</strong></div>
+      <div class="row" id="fieldOptions"></div>
+      <div class="row" style="margin-top:6px;">
+        <span class="muted">左侧图使用第一个选中的实验，右侧可聚合多实验信息做横向对比。</span>
+      </div>
       <div class="row" style="margin-top:8px;">
         <label for="recordId"><strong>record_id:</strong></label>
         <input id="recordId" type="text" placeholder="输入 record_id，例如 12345" />
         <button id="btnRender">确定并展示</button>
+        <button id="btnCompare">对比展示</button>
         <button id="btnBack" disabled>返回上一条</button>
         <span id="status" class="muted"></span>
       </div>
@@ -242,6 +321,10 @@ def _html_page() -> str:
 
   <script>
     const renderHistory = [];
+    const compareFieldOptions = """ + json.dumps(
+        [{"value": value, "label": label} for value, label in COMPARE_FIELD_OPTIONS],
+        ensure_ascii=False,
+    ) + """;
 
     async function getJSON(url, options) {
       const resp = await fetch(url, options);
@@ -261,17 +344,35 @@ def _html_page() -> str:
         return;
       }
       data.experiments.forEach((name, idx) => {
-        const id = `exp_${idx}`;
         const label = document.createElement('label');
         label.style.marginRight = '12px';
-        label.innerHTML = `<input type="radio" name="exp_name" value="${name}" ${idx===0 ? 'checked' : ''}/> ${name}`;
+        label.innerHTML = `<input type="checkbox" name="exp_name" value="${name}" ${idx===0 ? 'checked' : ''}/> ${name}`;
         expOptions.appendChild(label);
       });
     }
 
+    function loadFieldOptions() {
+      const fieldOptions = document.getElementById('fieldOptions');
+      fieldOptions.innerHTML = '';
+      compareFieldOptions.forEach((item, idx) => {
+        const label = document.createElement('label');
+        label.style.marginRight = '12px';
+        label.innerHTML = `<input type="checkbox" name="compare_field" value="${item.value}" ${idx < 2 ? 'checked' : ''}/> ${item.label}`;
+        fieldOptions.appendChild(label);
+      });
+    }
+
+    function selectedExpNames() {
+      return Array.from(document.querySelectorAll('input[name="exp_name"]:checked')).map((el) => el.value);
+    }
+
     function selectedExpName() {
-      const selected = document.querySelector('input[name="exp_name"]:checked');
-      return selected ? selected.value : '';
+      const selected = selectedExpNames();
+      return selected.length ? selected[0] : '';
+    }
+
+    function selectedCompareFields() {
+      return Array.from(document.querySelectorAll('input[name="compare_field"]:checked')).map((el) => el.value);
     }
 
     function updateBackButton() {
@@ -327,6 +428,53 @@ def _html_page() -> str:
       await renderRecordByTarget(exp_name, record_id, true);
     }
 
+    async function renderCompare() {
+      const expNames = selectedExpNames();
+      const compareFields = selectedCompareFields();
+      const record_id = document.getElementById('recordId').value.trim();
+      const errorEl = document.getElementById('error');
+      const statusEl = document.getElementById('status');
+      errorEl.textContent = '';
+      if (!expNames.length) {
+        errorEl.textContent = '请至少选择一个实验名';
+        return;
+      }
+      if (!compareFields.length) {
+        errorEl.textContent = '请至少选择一个对比字段';
+        return;
+      }
+      if (!record_id) {
+        errorEl.textContent = '请输入 record_id';
+        return;
+      }
+
+      const currentExp = selectedExpName();
+      const currentRecord = document.getElementById('recordId').value.trim();
+      if (currentExp && currentRecord) {
+        renderHistory.push({ exp_name: currentExp, record_id: currentRecord });
+      }
+
+      statusEl.textContent = '对比渲染中...';
+      try {
+        const data = await getJSON('/api/compare', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: `exp_names=${encodeURIComponent(expNames.join(','))}&record_id=${encodeURIComponent(record_id)}&compare_fields=${encodeURIComponent(compareFields.join(','))}`
+        });
+        document.getElementById('viewer').srcdoc = data.html;
+        document.getElementById('recordId').value = record_id;
+        statusEl.textContent = `已对比展示: ${expNames.join(', ')} / ${record_id}`;
+        updateBackButton();
+      } catch (err) {
+        if (currentExp && currentRecord) {
+          renderHistory.pop();
+        }
+        errorEl.textContent = err.message || String(err);
+        statusEl.textContent = '';
+        updateBackButton();
+      }
+    }
+
     async function goBack() {
       if (!renderHistory.length) return;
       const previous = renderHistory.pop();
@@ -341,6 +489,7 @@ def _html_page() -> str:
     });
 
     document.getElementById('btnRender').addEventListener('click', renderRecord);
+    document.getElementById('btnCompare').addEventListener('click', renderCompare);
     document.getElementById('btnBack').addEventListener('click', goBack);
     document.getElementById('recordId').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') renderRecord();
@@ -349,6 +498,7 @@ def _html_page() -> str:
     loadExperiments().catch((err) => {
       document.getElementById('error').textContent = err.message || String(err);
     });
+    loadFieldOptions();
     updateBackButton();
   </script>
 </body>
@@ -386,7 +536,7 @@ def create_handler(app: ViewerApp):
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/api/render":
+            if parsed.path not in {"/api/render", "/api/compare"}:
                 _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
 
@@ -398,10 +548,27 @@ def create_handler(app: ViewerApp):
             raw = self.rfile.read(content_length).decode("utf-8")
             form = parse_qs(raw, keep_blank_values=True)
             exp_name = (form.get("exp_name") or [""])[0].strip()
+            exp_names = [
+                item.strip()
+                for item in ((form.get("exp_names") or [""])[0].split(","))
+                if item.strip()
+            ]
+            compare_fields = [
+                item.strip()
+                for item in ((form.get("compare_fields") or [""])[0].split(","))
+                if item.strip()
+            ]
             record_id = (form.get("record_id") or [""])[0].strip()
 
             try:
-                html = app.render_record_html(exp_name=exp_name, record_id=record_id)
+                if parsed.path == "/api/render":
+                    html = app.render_record_html(exp_name=exp_name, record_id=record_id)
+                else:
+                    html = app.render_compare_html(
+                        exp_names=exp_names,
+                        record_id=record_id,
+                        compare_fields=compare_fields,
+                    )
             except Exception as e:
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(e)})
                 return
