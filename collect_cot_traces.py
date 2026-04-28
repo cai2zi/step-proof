@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode
 
 JsonDict = Dict[str, Any]
 
@@ -40,27 +41,41 @@ def _meta(rec: JsonDict) -> JsonDict:
     }
 
 
-def _node_base(rec: JsonDict, node: JsonDict, stage: str) -> JsonDict:
+def _item_base(rec: JsonDict, node: JsonDict, stage: str, graph_mode: str) -> JsonDict:
     base = _meta(rec)
-    base.update(
-        {
-            "stage": stage,
-            "node_id": node.get("id", ""),
-            "role": node.get("role", ""),
-            "node_type": node.get("node_type", ""),
-            "needs_verification": node.get("needs_verification"),
-            "statement": node.get("statement", ""),
-            "natural_language": node.get("natural_language", ""),
-        }
-    )
+    base["stage"] = stage
+    base["graph_mode"] = graph_mode
+    if graph_mode == FDG_GRAPH_MODE:
+        base.update(
+            {
+                "fact_id": node.get("fact_id", ""),
+                "text": node.get("text", ""),
+                "parent_fact_ids": node.get("parent_fact_ids", []),
+                "origin": node.get("origin", ""),
+                "is_final_answer": node.get("is_final_answer", False),
+                "proof_obligation": node.get("proof_obligation", {}),
+            }
+        )
+    else:
+        base.update(
+            {
+                "node_id": node.get("id", ""),
+                "role": node.get("role", ""),
+                "node_type": node.get("node_type", ""),
+                "needs_verification": node.get("needs_verification"),
+                "statement": node.get("statement", ""),
+                "natural_language": node.get("natural_language", ""),
+            }
+        )
     return base
 
 
-def _formal_rows(rows: Iterable[JsonDict], include_history: bool) -> Iterable[JsonDict]:
+def _formal_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str) -> Iterable[JsonDict]:
+    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in rows:
-        for node in rec.get("results", {}).get("nodes", []) or []:
+        for node in rec.get("results", {}).get(key, []) or []:
             formalization = node.get("formalization") or {}
-            out = _node_base(rec, node, "formal")
+            out = _item_base(rec, node, "formal", graph_mode)
             out.update(
                 {
                     "status": node.get("form_status", ""),
@@ -78,11 +93,12 @@ def _formal_rows(rows: Iterable[JsonDict], include_history: bool) -> Iterable[Js
             yield out
 
 
-def _prove_rows(rows: Iterable[JsonDict], include_history: bool) -> Iterable[JsonDict]:
+def _prove_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str) -> Iterable[JsonDict]:
+    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in rows:
-        for node in rec.get("results", {}).get("nodes", []) or []:
+        for node in rec.get("results", {}).get(key, []) or []:
             solved = node.get("solved_lemma") or {}
-            out = _node_base(rec, node, "prove")
+            out = _item_base(rec, node, "prove", graph_mode)
             out.update(
                 {
                     "status": node.get("prove_status", ""),
@@ -98,12 +114,14 @@ def _prove_rows(rows: Iterable[JsonDict], include_history: bool) -> Iterable[Jso
             yield out
 
 
-def _record_summary_rows(stage3_rows: Iterable[JsonDict]) -> Iterable[JsonDict]:
+def _record_summary_rows(stage3_rows: Iterable[JsonDict], graph_mode: str) -> Iterable[JsonDict]:
+    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in stage3_rows:
-        nodes = rec.get("results", {}).get("nodes", []) or []
+        nodes = rec.get("results", {}).get(key, []) or []
         summary = _meta(rec)
         summary.update(
             {
+                "graph_mode": graph_mode,
                 "record_status": (rec.get("execution") or {}).get("record_status", ""),
                 "node_count": len(nodes),
                 "form_success": sum(
@@ -135,20 +153,22 @@ def main() -> None:
 
     stage2_rows = list(_load_jsonl(args.stage2_jsonl))
     stage3_rows = list(_load_jsonl(args.stage3_jsonl))
+    stage2_graph_mode = ensure_single_graph_mode(stage2_rows, source_name=str(args.stage2_jsonl))
+    stage3_graph_mode = ensure_single_graph_mode(stage3_rows, source_name=str(args.stage3_jsonl))
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     counts = {
         "formal_last_attempts": _append_jsonl(
             args.out_dir / "formal_last_attempts.jsonl",
-            _formal_rows(stage2_rows, args.include_attempt_history),
+            _formal_rows(stage2_rows, args.include_attempt_history, stage2_graph_mode),
         ),
         "prove_last_attempts": _append_jsonl(
             args.out_dir / "prove_last_attempts.jsonl",
-            _prove_rows(stage3_rows, args.include_attempt_history),
+            _prove_rows(stage3_rows, args.include_attempt_history, stage3_graph_mode),
         ),
         "record_summary": _append_jsonl(
             args.out_dir / "record_summary.jsonl",
-            _record_summary_rows(stage3_rows),
+            _record_summary_rows(stage3_rows, stage3_graph_mode),
         ),
     }
     (args.out_dir / "summary.json").write_text(

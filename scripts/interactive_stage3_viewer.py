@@ -15,12 +15,15 @@ from proofflow.vis import (
     create_interactive_graph_only_visualization,
     create_interactive_visualization,
 )
+from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode, extract_record_items
 
 
 JsonDict = Dict[str, Any]
 COMPARE_FIELD_OPTIONS = [
     ("natural_language", "Natural Language"),
     ("statement", "Statement"),
+    ("text", "Fact Text"),
+    ("proof_obligation.informal_statement_content", "Proof Obligation"),
     ("formalization.lean_code", "Formalization.lean_code"),
     ("formalization.dependency_context_block", "Formalization.dependency_context_block"),
     ("solved_lemma.lean_code", "Solved_lemma.lean_code"),
@@ -91,25 +94,17 @@ def _load_jsonl(path: Path) -> List[JsonDict]:
 
 
 def _extract_nodes(rec: JsonDict, source: str) -> List[JsonDict]:
-    if source == "results":
-        nodes = rec.get("results", {}).get("nodes", [])
-        if (not isinstance(nodes, list) or not nodes) and rec.get("graph", {}).get("nodes"):
-            nodes = rec.get("graph", {}).get("nodes", [])
-    elif source == "graph":
-        nodes = rec.get("graph", {}).get("nodes", [])
-        if (not isinstance(nodes, list) or not nodes) and rec.get("results", {}).get("nodes"):
-            nodes = rec.get("results", {}).get("nodes", [])
-    else:
-        raise ValueError(f"invalid source: {source}")
+    nodes, graph_mode = extract_record_items(rec, source)
     if not isinstance(nodes, list) or not nodes:
-        raise ValueError(f"Selected record has empty {source}.nodes and no fallback node list")
+        raise ValueError(f"Selected record has empty {source} items and no fallback list")
 
-    nodes_dict = {n["id"]: n for n in nodes if "id" in n}
-    for n in nodes:
-        if "formalization" not in n or not isinstance(n["formalization"], dict):
-            n["formalization"] = {}
-        if not n["formalization"].get("dependency_context_block"):
-            n["formalization"]["dependency_context_block"] = _build_dependency_context(n, nodes_dict)
+    if graph_mode != FDG_GRAPH_MODE:
+        nodes_dict = {n["id"]: n for n in nodes if "id" in n}
+        for n in nodes:
+            if "formalization" not in n or not isinstance(n["formalization"], dict):
+                n["formalization"] = {}
+            if not n["formalization"].get("dependency_context_block"):
+                n["formalization"]["dependency_context_block"] = _build_dependency_context(n, nodes_dict)
     return nodes
 
 
@@ -176,7 +171,9 @@ class ViewerApp:
             raise FileNotFoundError(f"missing stage3 file: {stage3_jsonl}")
 
         id_map: Dict[str, JsonDict] = {}
-        for rec in _load_jsonl(stage3_jsonl):
+        rows = _load_jsonl(stage3_jsonl)
+        ensure_single_graph_mode(rows, source_name=str(stage3_jsonl))
+        for rec in rows:
             rid = str(rec.get("meta", {}).get("record_id", "")).strip()
             if rid:
                 id_map[rid] = rec

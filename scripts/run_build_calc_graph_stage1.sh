@@ -57,6 +57,7 @@ fi
 # ── Batch / retry ─────────────────────────────────────────────────────────
 BATCH_SIZE="${BATCH_SIZE:-64}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
+GRAPH_MODE="${GRAPH_MODE:-legacy}"
 INCLUDE_THINK_IN_DAG="${INCLUDE_THINK_IN_DAG:-0}"
 
 # 仅支持 0/1：1 开启，其它值一律视为 0。
@@ -91,5 +92,6 @@ exec "${PYTHON}" "${STEP_PROOF_ROOT}/build_calc_graph_stage1.py" \
   "${CHAT_KWARGS_ARGS[@]}" \
   --batch-size     "${BATCH_SIZE}" \
   --max-retries    "${MAX_RETRIES}" \
+  --graph-mode     "${GRAPH_MODE}" \
   "${THINK_FLAG}" \
   "$@"

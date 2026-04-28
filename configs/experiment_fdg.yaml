@@ -1,5 +1,5 @@
 exp:
-  name: debug_exp
+  name: debug_exp_fdg
   root: results
 
 python: ${oc.env:PYTHON,python}
@@ -34,7 +34,7 @@ stage1:
     enable_thinking: true
   batch_size: 512
   max_retries: 3
-  graph_mode: legacy
+  graph_mode: fdg
   id_schema_mode: calc
   validation_profile: strict
   follow_dag: true

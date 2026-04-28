@@ -22,10 +22,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
+from proofflow.fdg_graph import (
+    FDGDocument,
+    build_fdg_messages,
+    fdg_final_fact_ids,
+    fdg_topo_order,
+    parse_and_validate_fdg,
+)
+from proofflow.graph_mode import FDG_GRAPH_MODE, LEGACY_GRAPH_MODE
 from proofflow.node_schema import infer_role, is_final, is_structural_final
 from proofflow.local_vllm import LocalLLMManager
 from proofflow.proof_graph import (
-    GraphParseResult,
     ProofGraphItem,
     append_error_to_messages,
     build_graph_messages,
@@ -166,7 +173,7 @@ def load_done_ids(out_path: Path) -> set:
 # Payload builder
 # ---------------------------------------------------------------------------
 
-def _build_payload(
+def _build_legacy_payload(
     record: PendingRecord,
     items: List[ProofGraphItem],
     id_schema_mode: str,
@@ -178,6 +185,7 @@ def _build_payload(
     return {
         "meta": {
             "schema_version": "graph-v1",
+            "graph_mode": LEGACY_GRAPH_MODE,
             "record_id": record.record_id,
             "task_profile": "calc",
             "source_file": record.source_file,
@@ -198,6 +206,42 @@ def _build_payload(
             "nodes": nodes,
             "topo_order": _topo_order_from_nodes(nodes),
             "final_nodes": _final_node_ids(nodes, id_schema_mode),
+        },
+    }
+
+
+def _build_fdg_payload(
+    record: PendingRecord,
+    document: FDGDocument,
+    tries: int,
+    include_think_in_dag: bool,
+    extraction_response: Optional[str],
+    validation_warnings: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "meta": {
+            "schema_version": "fdg-v1",
+            "graph_mode": FDG_GRAPH_MODE,
+            "record_id": record.record_id,
+            "task_profile": "calc",
+            "source_file": record.source_file,
+            "source_row_pos": record.source_row_pos,
+            "created_at": _utc_now_iso(),
+            "graph_build_tries": tries,
+            "include_think_in_dag": include_think_in_dag,
+        },
+        "input": {
+            "problem": record.problem,
+            "raw_cot": record.raw_cot,
+        },
+        "extraction": {
+            "raw_response": extraction_response,
+        },
+        "graph": {
+            "facts": [fact.model_dump() for fact in document.facts],
+            "topo_order": fdg_topo_order(document.facts),
+            "final_fact_ids": fdg_final_fact_ids(document.facts),
+            "validation_warnings": validation_warnings,
         },
     }
 
@@ -258,6 +302,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-retries", type=int, default=3)
     # Graph options
+    parser.add_argument(
+        "--graph-mode",
+        choices=(LEGACY_GRAPH_MODE, FDG_GRAPH_MODE),
+        default=LEGACY_GRAPH_MODE,
+    )
     parser.add_argument("--id-schema-mode", default="calc")
     parser.add_argument("--validation-profile", default="strict")
     parser.add_argument("--follow-dag", action=argparse.BooleanOptionalAction, default=True)
@@ -345,12 +394,19 @@ def main() -> None:
                 continue
             if raw_cot is None or (isinstance(raw_cot, float) and pd.isna(raw_cot)):
                 continue
-            msgs = build_graph_messages(
-                task_profile="calc",
-                problem=str(problem),
-                raw_cot=str(raw_cot),
-                include_think_in_dag=args.include_think_in_dag,
-            )
+            if args.graph_mode == FDG_GRAPH_MODE:
+                msgs = build_fdg_messages(
+                    problem_text=str(problem),
+                    solution_or_cot=str(raw_cot),
+                    include_think_in_dag=args.include_think_in_dag,
+                )
+            else:
+                msgs = build_graph_messages(
+                    task_profile="calc",
+                    problem=str(problem),
+                    raw_cot=str(raw_cot),
+                    include_think_in_dag=args.include_think_in_dag,
+                )
             new_count += 1
             return PendingRecord(
                 record_id=record_id,
@@ -407,24 +463,37 @@ def main() -> None:
                     continue
 
                 # ── parse + validate ────────────────────────────────────────
-                result = parse_and_validate_graph(
-                    content=content,
-                    id_schema_mode=args.id_schema_mode,
-                    validation_profile=args.validation_profile,
-                    follow_dag=args.follow_dag,
-                    attempt=record.retry_count,
-                    allow_graph_rewrite_after=args.allow_graph_rewrite_after,
-                )
+                if args.graph_mode == FDG_GRAPH_MODE:
+                    result = parse_and_validate_fdg(content)
+                else:
+                    result = parse_and_validate_graph(
+                        content=content,
+                        id_schema_mode=args.id_schema_mode,
+                        validation_profile=args.validation_profile,
+                        follow_dag=args.follow_dag,
+                        attempt=record.retry_count,
+                        allow_graph_rewrite_after=args.allow_graph_rewrite_after,
+                    )
 
                 if result.ok:
-                    payload = _build_payload(
-                        record,
-                        result.items,
-                        args.id_schema_mode,
-                        record.retry_count + 1,
-                        args.include_think_in_dag,
-                        content,
-                    )
+                    if args.graph_mode == FDG_GRAPH_MODE:
+                        payload = _build_fdg_payload(
+                            record,
+                            result.document,
+                            record.retry_count + 1,
+                            args.include_think_in_dag,
+                            content,
+                            list((result.report or {}).get("warnings") or []),
+                        )
+                    else:
+                        payload = _build_legacy_payload(
+                            record,
+                            result.items,
+                            args.id_schema_mode,
+                            record.retry_count + 1,
+                            args.include_think_in_dag,
+                            content,
+                        )
                     graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     graphs_f.flush()
                     stats["ok"] += 1
@@ -432,13 +501,13 @@ def main() -> None:
                     continue
 
                 # keep last_parsed_graph for orphan-drop
-                if result.last_parsed_graph is not None:
+                if args.graph_mode == LEGACY_GRAPH_MODE and result.last_parsed_graph is not None:
                     record.last_parsed_graph = result.last_parsed_graph
 
                 # ── max retries reached → orphan-drop fallback ──────────────
                 if record.retry_count >= args.max_retries:
                     recovered = None
-                    if record.last_parsed_graph:
+                    if args.graph_mode == LEGACY_GRAPH_MODE and record.last_parsed_graph:
                         recovered = try_orphan_drop_recovery(
                             last_parsed_graph=record.last_parsed_graph,
                             id_schema_mode=args.id_schema_mode,
@@ -447,7 +516,7 @@ def main() -> None:
                             max_retries=args.max_retries,
                         )
                     if recovered is not None:
-                        payload = _build_payload(
+                        payload = _build_legacy_payload(
                             record,
                             recovered,
                             args.id_schema_mode,

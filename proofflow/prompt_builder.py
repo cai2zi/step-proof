@@ -32,8 +32,10 @@ def build_chat_messages(
     profile: TaskProfile,
     stage: Literal[
         "dag",
+        "fdg",
         "formalize_claim",
         "formalize_context",
+        "formalize_obligation",
         "prove",
         "prove_negation",
     ],
@@ -43,12 +45,18 @@ def build_chat_messages(
     if stage == "dag":
         system = _read(f"{profile}/system/dag.md")
         user = render_template(_read(f"{profile}/user/dag.md"), **kwargs)
+    elif stage == "fdg":
+        system = _read(f"{profile}/system/fdg.md")
+        user = render_template(_read(f"{profile}/user/fdg.md"), **kwargs)
     elif stage == "formalize_claim":
         system = _read(f"{profile}/system/formalize.md")
         user = render_template(_read(f"{profile}/user/formalize_claim.md"), **kwargs)
     elif stage == "formalize_context":
         system = _read(f"{profile}/system/formalize.md")
         user = render_template(_read(f"{profile}/user/formalize_context.md"), **kwargs)
+    elif stage == "formalize_obligation":
+        system = _read(f"{profile}/system/formalize_obligation.md")
+        user = render_template(_read(f"{profile}/user/formalize_obligation.md"), **kwargs)
     elif stage == "prove":
         system = _read(f"{profile}/system/prove.md")
         user = render_template(_read(f"{profile}/user/prove.md"), **kwargs)

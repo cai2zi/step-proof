@@ -340,6 +340,8 @@ class ExperimentRunner:
             _cmd_value(cfg.batch_size),
             "--max-retries",
             _cmd_value(cfg.max_retries),
+            "--graph-mode",
+            _cmd_value(cfg.graph_mode),
             "--id-schema-mode",
             _cmd_value(cfg.id_schema_mode),
             "--validation-profile",

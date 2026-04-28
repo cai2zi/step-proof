@@ -17,6 +17,7 @@ from proofflow.vis import (
     create_interactive_graph_only_visualization,
     create_interactive_visualization,
 )
+from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode, extract_record_items
 from proofflow.stage2_common import build_dependency_context
 
 
@@ -160,25 +161,17 @@ def _build_proof_str(rec: Dict[str, Any]) -> str:
 
 
 def _extract_nodes(rec: Dict[str, Any], source: str) -> List[Dict[str, Any]]:
-    if source == "results":
-        nodes = rec.get("results", {}).get("nodes", [])
-        if (not isinstance(nodes, list) or not nodes) and rec.get("graph", {}).get("nodes"):
-            nodes = rec.get("graph", {}).get("nodes", [])
-    elif source == "graph":
-        nodes = rec.get("graph", {}).get("nodes", [])
-        if (not isinstance(nodes, list) or not nodes) and rec.get("results", {}).get("nodes"):
-            nodes = rec.get("results", {}).get("nodes", [])
-    else:
-        raise SystemExit(f"invalid --source: {source} (expected: results|graph)")
+    nodes, graph_mode = extract_record_items(rec, source)
     if not isinstance(nodes, list) or not nodes:
-        raise SystemExit(f"Selected record has empty {source}.nodes and no fallback node list")
+        raise SystemExit(f"Selected record has empty {source} items and no fallback list")
 
-    nodes_dict = {n["id"]: n for n in nodes}
-    for n in nodes:
-        if "formalization" not in n or not isinstance(n["formalization"], dict):
-            n["formalization"] = {}
-        if not n["formalization"].get("dependency_context_block"):
-            n["formalization"]["dependency_context_block"] = build_dependency_context(n, nodes_dict)
+    if graph_mode != FDG_GRAPH_MODE:
+        nodes_dict = {n["id"]: n for n in nodes if "id" in n}
+        for n in nodes:
+            if "formalization" not in n or not isinstance(n["formalization"], dict):
+                n["formalization"] = {}
+            if not n["formalization"].get("dependency_context_block"):
+                n["formalization"]["dependency_context_block"] = build_dependency_context(n, nodes_dict)
 
     return nodes
 
@@ -249,6 +242,7 @@ def main() -> None:
         raise SystemExit(f"stage2 JSONL not found: {args.stage2_jsonl}")
 
     rows = _load_jsonl(args.stage2_jsonl)
+    ensure_single_graph_mode(rows, source_name=str(args.stage2_jsonl))
     record_ids = _parse_record_ids(args.record_ids)
     bucket_labels = _parse_bucket_labels(args.prove_ratio_buckets)
     stats_bucket_ids = []

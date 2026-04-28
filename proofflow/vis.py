@@ -6,6 +6,7 @@ import webbrowser
 import matplotlib.pyplot as plt
 import networkx as nx
 
+from .graph_mode import item_dependencies, item_id
 from .node_schema import ROLE_CLAIM, ROLE_CONDITION, ROLE_CONTEXT, ROLE_FINAL, infer_role
 
 
@@ -39,31 +40,31 @@ def build_dag(data):
     node_info = {}
     
     for item in data:
-        node_id = _get_item_value(item, 'id')
+        node_dict = item.model_dump() if hasattr(item, "model_dump") else (item.copy() if isinstance(item, dict) else dict(item))
+        node_id = item_id(node_dict)
 
         if not node_id:
             continue  # Skip items without ID
-        
-        role = infer_role(node_id, _get_item_value(item, "node_type"), mode="auto")
-        if role == ROLE_CONDITION:
-            item_type = "condition"
-        elif role == ROLE_FINAL:
-            item_type = "solution"
-        elif role == ROLE_CONTEXT:
-            item_type = "definition"
-        elif role == ROLE_CLAIM:
-            item_type = "lemma"
+
+        if "fact_id" in node_dict:
+            item_type = "solution" if node_dict.get("is_final_answer") else "fact"
         else:
-            item_type = "unknown"
-        
-        # Convert Pydantic model to dict if needed, or copy existing dict
-        if hasattr(item, 'model_dump'):
-            item_dict = item.model_dump()
-        else:
-            item_dict = item.copy() if isinstance(item, dict) else dict(item)
+            role = infer_role(node_id, _get_item_value(item, "node_type"), mode="auto")
+            if role == ROLE_CONDITION:
+                item_type = "condition"
+            elif role == ROLE_FINAL:
+                item_type = "solution"
+            elif role == ROLE_CONTEXT:
+                item_type = "definition"
+            elif role == ROLE_CLAIM:
+                item_type = "lemma"
+            else:
+                item_type = "unknown"
         
         # Add type field to the item
+        item_dict = node_dict
         item_dict['type'] = item_type
+        item_dict.setdefault("id", node_id)
         
         node_info[node_id] = item_dict
 
@@ -83,7 +84,7 @@ def build_dag(data):
         G.add_node(node_id)
         
         # Add edges based on dependencies
-        dependencies = _get_item_value(item, 'dependencies', [])
+        dependencies = item_dependencies(node_dict)
         for dep in dependencies:
             if dep:  # Only add edge if dependency exists
                 G.add_edge(dep, node_id)
@@ -108,6 +109,8 @@ def create_static_visualization(G, node_info, filename='proof_graph.png', dpi: i
             node_colors.append('#ccffcc')  # Light green for solutions
         elif node_type == 'definition':
             node_colors.append("#c0a07f")  # Light orange for definitions
+        elif node_type == 'fact':
+            node_colors.append('#d7e6f5')
         else:  # lemma
             node_colors.append('#ccccff')  # Light blue for lemmas
     
@@ -197,8 +200,12 @@ def create_interactive_visualization(
             color = "#cfb795"
             shape = 'box'
             size = 30
+        elif node_type == 'fact':
+            color = '#d7e6f5'
+            shape = 'dot'
+            size = 25
         else:  # lemma or unknown
-            color = '#8dafcc'
+            color = '#7fa8c9'
             shape = 'dot'
             size = 25
         
@@ -643,6 +650,10 @@ def create_interactive_visualization(
                                 <span>Lemmas (l)</span>
                             </div>
                             <div class="legend-item">
+                                <div class="legend-color" style="background: #d7e6f5;"></div>
+                                <span>Facts (fdg)</span>
+                            </div>
+                            <div class="legend-item">
                                 <div class="legend-color" style="background: #a3c2a8;"></div>
                                 <span>Theorem Solutions (ts)</span>
                             </div>
@@ -1063,6 +1074,9 @@ def create_interactive_graph_only_visualization(
         elif node_type == "definition":
             color = "#cfb795"
             shape = "box"
+        elif node_type == "fact":
+            color = "#d7e6f5"
+            shape = "dot"
         else:
             color = "#8dafcc"
             shape = "dot"
@@ -1124,6 +1138,7 @@ def create_interactive_graph_only_visualization(
         <div class="item"><span class="dot" style="background:#eba0a0"></span>problem condition</div>
         <div class="item"><span class="dot" style="background:#cfb795"></span>context</div>
         <div class="item"><span class="dot" style="background:#8dafcc"></span>claim</div>
+        <div class="item"><span class="dot" style="background:#d7e6f5"></span>fact</div>
         <div class="item"><span class="dot" style="background:#a3c2a8"></span>final answer</div>
       </div>
       <div id="mynetwork"></div>
@@ -1153,7 +1168,7 @@ def create_interactive_graph_only_visualization(
     function renderInfo(nodeId) {{
       const info = nodeInfo[nodeId];
       if (!info) return;
-      const keys = ["id", "type", "node_type", "dependencies", "natural_language", "statement", "needs_verification"];
+      const keys = ["id", "fact_id", "type", "origin", "is_final_answer", "parent_fact_ids", "proof_obligation", "node_type", "dependencies", "natural_language", "statement", "text", "needs_verification"];
       let html = "";
       for (const k of keys) {{
         const v = info[k];
