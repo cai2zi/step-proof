@@ -41,11 +41,14 @@ stage1:
   allow_graph_rewrite_after: 3
   include_think_in_dag: false
 
-stage2:
+lean_runtime:
   mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
+  lean_temp_dir: lean_jobs_shared
+  
+stage2:
   include_parent_statement: false
   include_parent_nl: false
   gpus: 0,1,2,3,4,5,6,7
@@ -71,10 +74,6 @@ stage2:
   limit: -1
 
 stage3:
-  mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
-  lean_backend: persistent_lsp
-  lean_check_concurrency: 64
-  lean_worker_pool_size: 0
   gpus: 0,1,2,3,4,5,6,7
   dtype: float16
   gpu_memory_utilization: 0.95

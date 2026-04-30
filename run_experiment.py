@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
+import contextlib
+import io
 import json
-import os
 import shutil
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import hydra  # type: ignore[import-not-found]
 from hydra.core.hydra_config import HydraConfig  # type: ignore[import-not-found]
 from omegaconf import DictConfig, OmegaConf  # type: ignore[import-not-found]
+
+from proofflow.experiment_lean_runtime import ExperimentLeanRuntime, LeanRuntimeConfig
+from proofflow.fdg_stage2_runner import FDGStage2Runner
+from proofflow.fdg_stage3_runner import FDGStage3Runner
+from proofflow.graph_mode import FDG_GRAPH_MODE, detect_graph_mode_from_jsonl
+from proofflow.stage2_runner import Stage2Runner, build_arg_parser as build_stage2_arg_parser
+from proofflow.stage3_runner import Stage3Runner, build_arg_parser as build_stage3_arg_parser
 
 
 JsonDict = Dict[str, Any]
@@ -60,7 +71,6 @@ def _count_jsonl(path: Path) -> int:
 
 
 def _stage1_done_count(graphs_jsonl: Path) -> int:
-    """Count already completed stage1 records from output JSONL."""
     return _count_jsonl(graphs_jsonl)
 
 
@@ -83,6 +93,23 @@ def _git_commit(repo_root: Path) -> str:
         return ""
 
 
+class _TeeStream(io.TextIOBase):
+    def __init__(self, log_f: io.TextIOBase, console_f: Optional[io.TextIOBase]) -> None:
+        self.log_f = log_f
+        self.console_f = console_f
+
+    def write(self, s: str) -> int:
+        self.log_f.write(s)
+        if self.console_f is not None:
+            self.console_f.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        self.log_f.flush()
+        if self.console_f is not None:
+            self.console_f.flush()
+
+
 class ExperimentRunner:
     def __init__(self, cfg: DictConfig) -> None:
         self.cfg = cfg
@@ -101,6 +128,43 @@ class ExperimentRunner:
         self.viz_dir = self.exp_dir / "visualizations"
         self.started_at = _utc_now_iso()
         self.runtime_metrics_path = self.stats_dir / "stage_runtime_metrics.json"
+        self.shared_lean_temp_dir = (
+            self._shared_lean_temp_dir() if "lean_runtime" in self.cfg else self.exp_dir / "lean_jobs_shared"
+        )
+
+    def _shared_lean_cfg(self) -> DictConfig:
+        if "lean_runtime" not in self.cfg:
+            raise RuntimeError("Missing required top-level config block: lean_runtime")
+        return self.cfg.lean_runtime
+
+    def _shared_lean_temp_dir(self) -> Path:
+        cfg = self._shared_lean_cfg()
+        if "lean_temp_dir" not in cfg:
+            raise RuntimeError("lean_runtime.lean_temp_dir is required")
+        return _as_path(self.exp_dir, _cmd_value(cfg.lean_temp_dir))
+
+    def _build_shared_lean_runtime_config(self) -> LeanRuntimeConfig:
+        cfg = self._shared_lean_cfg()
+        required = [
+            "mathlib_path",
+            "lean_backend",
+            "lean_check_concurrency",
+            "lean_worker_pool_size",
+            "lean_temp_dir",
+        ]
+        missing = [name for name in required if name not in cfg]
+        if missing:
+            raise RuntimeError(f"lean_runtime is missing required fields: {missing}")
+        mathlib_path = _cmd_value(cfg.mathlib_path)
+        if not Path(mathlib_path).is_dir():
+            raise RuntimeError(f"lean_runtime.mathlib_path is not a directory: {mathlib_path}")
+        return LeanRuntimeConfig(
+            mathlib_path=mathlib_path,
+            lean_backend=_cmd_value(cfg.lean_backend),
+            lean_check_concurrency=int(cfg.lean_check_concurrency),
+            lean_worker_pool_size=int(cfg.lean_worker_pool_size),
+            lean_temp_dir=str(self.shared_lean_temp_dir),
+        )
 
     def prepare(self) -> None:
         self.exp_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +177,7 @@ class ExperimentRunner:
                 self.stats_dir,
                 self.cot_dir,
                 self.viz_dir,
+                self.shared_lean_temp_dir,
             ):
                 if path.exists():
                     shutil.rmtree(path)
@@ -124,6 +189,7 @@ class ExperimentRunner:
             self.stats_dir,
             self.cot_dir,
             self.viz_dir,
+            self.shared_lean_temp_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         self._write_resolved_config()
@@ -198,18 +264,53 @@ class ExperimentRunner:
         }
         _write_json(self.runtime_metrics_path, metrics)
 
+    def _finalize_stage_status(
+        self,
+        stage: str,
+        cmd: List[str],
+        log_path: Path,
+        started_at: str,
+        started_perf: float,
+        result_code: int,
+    ) -> None:
+        ended_at = _utc_now_iso()
+        duration_seconds = time.perf_counter() - started_perf
+        status = {
+            "command": cmd,
+            "log_path": str(log_path),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "exit_code": result_code,
+            "duration_seconds": round(duration_seconds, 6),
+        }
+        self._update_status(stage, status)
+        self._update_runtime_metrics(
+            stage,
+            {
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration_seconds, 6),
+                "exit_code": result_code,
+                "log_path": str(log_path),
+                "command": cmd,
+            },
+        )
+        self._merge_stage_detail_metrics(stage)
+
     def _run_command(self, stage: str, cmd: List[str]) -> None:
         log_path = self.logs_dir / f"{stage}.log"
         started_at = _utc_now_iso()
         started_perf = time.perf_counter()
         stream_to_console = bool(self.cfg.run.stream_logs_to_console)
-        status = {
-            "command": cmd,
-            "log_path": str(log_path),
-            "started_at": started_at,
-            "exit_code": None,
-        }
-        self._update_status(stage, status)
+        self._update_status(
+            stage,
+            {
+                "command": cmd,
+                "log_path": str(log_path),
+                "started_at": started_at,
+                "exit_code": None,
+            },
+        )
         with open(log_path, "w", encoding="utf-8") as log_f:
             cmd_line = "$ " + " ".join(cmd)
             log_f.write(cmd_line + "\n\n")
@@ -231,63 +332,51 @@ class ExperimentRunner:
                     print(line, end="", flush=True)
             process.wait()
             result_code = process.returncode
-        ended_at = _utc_now_iso()
-        duration_seconds = time.perf_counter() - started_perf
-        status.update(
-            {
-                "ended_at": ended_at,
-                "exit_code": result_code,
-                "duration_seconds": round(duration_seconds, 6),
-            }
-        )
-        self._update_status(stage, status)
-        self._update_runtime_metrics(
-            stage,
-            {
-                "started_at": started_at,
-                "ended_at": ended_at,
-                "duration_seconds": round(duration_seconds, 6),
-                "exit_code": result_code,
-                "log_path": str(log_path),
-                "command": cmd,
-            },
-        )
-        self._merge_stage_detail_metrics(stage)
+        self._finalize_stage_status(stage, cmd, log_path, started_at, started_perf, result_code)
         if result_code != 0:
             raise RuntimeError(f"{stage} failed with exit code {result_code}; see {log_path}")
 
-    def run(self) -> None:
-        stages = set(str(stage) for stage in self.cfg.run.stages)
-        if "stage1" in stages:
-            self.run_stage1()
-        if "stage2" in stages:
-            self.run_stage2()
-        if "stage3" in stages:
-            self.run_stage3()
-        if "stats" in stages:
-            self.run_stats()
-        if "cot" in stages:
-            self.run_cot()
-        if "viz" in stages:
-            self.run_viz()
-        self._write_run_meta(ended=True)
-        self._finalize_runtime_metrics()
-
-    def run_stage1(self) -> None:
-        cfg = self.cfg.stage1
-        graphs_out = self.stage1_dir / "graphs.jsonl"
-        requested_limit = int(cfg.limit)
-        effective_limit = requested_limit
-        existing_done = 0
-        if requested_limit >= 0 and bool(self.cfg.run.resume):
-            existing_done = _stage1_done_count(graphs_out)
-            effective_limit = max(requested_limit - existing_done, 0)
-
-        print(
-            f"[stage1] limit_requested={requested_limit} "
-            f"existing_done={existing_done} effective_new_limit={effective_limit}",
-            flush=True,
+    async def _run_inprocess_stage(
+        self,
+        stage: str,
+        cmd: List[str],
+        runner_coro: Callable[[], asyncio.Future[Any] | Any],
+    ) -> None:
+        log_path = self.logs_dir / f"{stage}.log"
+        started_at = _utc_now_iso()
+        started_perf = time.perf_counter()
+        stream_to_console = bool(self.cfg.run.stream_logs_to_console)
+        self._update_status(
+            stage,
+            {
+                "command": cmd,
+                "log_path": str(log_path),
+                "started_at": started_at,
+                "exit_code": None,
+            },
         )
+        result_code = 0
+        with open(log_path, "w", encoding="utf-8") as log_f:
+            cmd_line = "$ " + " ".join(cmd)
+            log_f.write(cmd_line + "\n\n")
+            log_f.flush()
+            if stream_to_console:
+                print(f"[{stage}] {cmd_line}", flush=True)
+            tee = _TeeStream(log_f, sys.__stdout__ if stream_to_console else None)
+            try:
+                with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                    await runner_coro()
+            except Exception:
+                result_code = 1
+                with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                    traceback.print_exc()
+                raise
+            finally:
+                tee.flush()
+                self._finalize_stage_status(stage, cmd, log_path, started_at, started_perf, result_code)
+
+    def _build_stage1_cmd(self, effective_limit: int) -> List[str]:
+        cfg = self.cfg.stage1
         cmd = [
             self.python,
             "-u",
@@ -305,7 +394,7 @@ class ExperimentRunner:
             "--limit",
             str(effective_limit),
             "--out",
-            str(graphs_out),
+            str(self.stage1_dir / "graphs.jsonl"),
             "--skipped",
             str(self.stage1_dir / "skipped.jsonl"),
             "--failed",
@@ -356,10 +445,11 @@ class ExperimentRunner:
             cmd.extend(["--chat-template-kwargs-json", chat_kwargs])
         if not bool(self.cfg.run.resume):
             cmd.append("--no-resume")
-        self._run_command("stage1", cmd)
+        return cmd
 
-    def run_stage2(self) -> None:
+    def _build_stage2_cmd(self) -> List[str]:
         cfg = self.cfg.stage2
+        lean_cfg = self._shared_lean_cfg()
         cmd = [
             self.python,
             "-u",
@@ -375,17 +465,17 @@ class ExperimentRunner:
             "--limit",
             _cmd_value(cfg.limit),
             "--mathlib-path",
-            _cmd_value(cfg.mathlib_path),
+            _cmd_value(lean_cfg.mathlib_path),
             "--lean-backend",
-            _cmd_value(cfg.lean_backend),
+            _cmd_value(lean_cfg.lean_backend),
             "--lean-check-concurrency",
-            _cmd_value(cfg.lean_check_concurrency),
+            _cmd_value(lean_cfg.lean_check_concurrency),
             "--lean-worker-pool-size",
-            _cmd_value(cfg.lean_worker_pool_size),
+            _cmd_value(lean_cfg.lean_worker_pool_size),
             _bool_flag(bool(cfg.include_parent_statement), "include-parent-statement"),
             _bool_flag(bool(cfg.include_parent_nl), "include-parent-nl"),
             "--lean-temp-dir",
-            str(self.stage2_dir / "lean_jobs"),
+            str(self.shared_lean_temp_dir),
             "--gpus",
             _cmd_value(cfg.gpus),
             "--dtype",
@@ -430,10 +520,11 @@ class ExperimentRunner:
             cmd.extend(["--formalizer-chat-template-kwargs-json", chat_kwargs])
         if not bool(self.cfg.run.resume):
             cmd.append("--no-resume")
-        self._run_command("stage2", cmd)
+        return cmd
 
-    def run_stage3(self) -> None:
+    def _build_stage3_cmd(self) -> List[str]:
         cfg = self.cfg.stage3
+        lean_cfg = self._shared_lean_cfg()
         cmd = [
             self.python,
             "-u",
@@ -449,15 +540,15 @@ class ExperimentRunner:
             "--limit",
             _cmd_value(cfg.limit),
             "--mathlib-path",
-            _cmd_value(cfg.mathlib_path),
+            _cmd_value(lean_cfg.mathlib_path),
             "--lean-backend",
-            _cmd_value(cfg.lean_backend),
+            _cmd_value(lean_cfg.lean_backend),
             "--lean-check-concurrency",
-            _cmd_value(cfg.lean_check_concurrency),
+            _cmd_value(lean_cfg.lean_check_concurrency),
             "--lean-worker-pool-size",
-            _cmd_value(cfg.lean_worker_pool_size),
+            _cmd_value(lean_cfg.lean_worker_pool_size),
             "--lean-temp-dir",
-            str(self.stage3_dir / "lean_jobs"),
+            str(self.shared_lean_temp_dir),
             "--gpus",
             _cmd_value(cfg.gpus),
             "--dtype",
@@ -502,7 +593,79 @@ class ExperimentRunner:
             cmd.extend(["--prover-chat-template-kwargs-json", chat_kwargs])
         if not bool(self.cfg.run.resume):
             cmd.append("--no-resume")
-        self._run_command("stage3", cmd)
+        return cmd
+
+    def _build_stage2_runner(self, args: argparse.Namespace, runtime: ExperimentLeanRuntime):
+        if not args.infile.is_file():
+            raise RuntimeError(f"--infile not found: {args.infile}")
+        if not Path(args.mathlib_path).is_dir():
+            raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
+        graph_mode = detect_graph_mode_from_jsonl(args.infile)
+        runner_cls = FDGStage2Runner if graph_mode == FDG_GRAPH_MODE else Stage2Runner
+        return runner_cls(args, lean_server=runtime.lean_server, owned_lean_server=False)
+
+    def _build_stage3_runner(self, args: argparse.Namespace, runtime: ExperimentLeanRuntime):
+        if not args.infile.is_file():
+            raise RuntimeError(f"--infile not found: {args.infile}")
+        if not Path(args.mathlib_path).is_dir():
+            raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
+        graph_mode = detect_graph_mode_from_jsonl(args.infile)
+        runner_cls = FDGStage3Runner if graph_mode == FDG_GRAPH_MODE else Stage3Runner
+        return runner_cls(args, lean_server=runtime.lean_server, owned_lean_server=False)
+
+    async def _run_shared_lean_stages(self, *, run_stage2: bool, run_stage3: bool) -> None:
+        runtime = ExperimentLeanRuntime(self._build_shared_lean_runtime_config())
+        try:
+            await runtime.ensure_ready()
+            if run_stage2:
+                stage2_cmd = self._build_stage2_cmd()
+                stage2_args = build_stage2_arg_parser().parse_args(stage2_cmd[3:])
+                runner = self._build_stage2_runner(stage2_args, runtime)
+                await self._run_inprocess_stage("stage2", stage2_cmd, runner.run)
+            if run_stage3:
+                stage3_cmd = self._build_stage3_cmd()
+                stage3_args = build_stage3_arg_parser().parse_args(stage3_cmd[3:])
+                runner = self._build_stage3_runner(stage3_args, runtime)
+                await self._run_inprocess_stage("stage3", stage3_cmd, runner.run)
+        finally:
+            await runtime.aclose()
+
+    def run(self) -> None:
+        stages = set(str(stage) for stage in self.cfg.run.stages)
+        if "stage1" in stages:
+            self.run_stage1()
+        if "stage2" in stages or "stage3" in stages:
+            asyncio.run(
+                self._run_shared_lean_stages(
+                    run_stage2="stage2" in stages,
+                    run_stage3="stage3" in stages,
+                )
+            )
+        if "stats" in stages:
+            self.run_stats()
+        if "cot" in stages:
+            self.run_cot()
+        if "viz" in stages:
+            self.run_viz()
+        self._write_run_meta(ended=True)
+        self._finalize_runtime_metrics()
+
+    def run_stage1(self) -> None:
+        cfg = self.cfg.stage1
+        graphs_out = self.stage1_dir / "graphs.jsonl"
+        requested_limit = int(cfg.limit)
+        effective_limit = requested_limit
+        existing_done = 0
+        if requested_limit >= 0 and bool(self.cfg.run.resume):
+            existing_done = _stage1_done_count(graphs_out)
+            effective_limit = max(requested_limit - existing_done, 0)
+
+        print(
+            f"[stage1] limit_requested={requested_limit} "
+            f"existing_done={existing_done} effective_new_limit={effective_limit}",
+            flush=True,
+        )
+        self._run_command("stage1", self._build_stage1_cmd(effective_limit))
 
     def run_stats(self) -> None:
         cmd = [
