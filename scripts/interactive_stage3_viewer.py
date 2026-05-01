@@ -30,58 +30,6 @@ COMPARE_FIELD_OPTIONS = [
 ]
 
 
-def _remove_imports(lean_code: str) -> str:
-    lines_to_remove = [
-        "import Mathlib",
-        "import Aesop",
-        "set_option maxHeartbeats 0",
-        "open BigOperators Real Nat Topology Rat Filter",
-    ]
-    code_lines = lean_code.split("\n")
-    filtered_lines: List[str] = []
-    for line in code_lines:
-        if line.strip() not in lines_to_remove:
-            filtered_lines.append(line)
-    return "\n".join(filtered_lines).strip()
-
-
-def _build_dependency_context(node: JsonDict, nodes: Dict[str, JsonDict]) -> str:
-    dependencies = list(node.get("dependencies") or [])
-    if not dependencies:
-        return ""
-
-    intro = (
-        f"\n\n This proof step depend on previous proof steps, namely steps {dependencies}.\n"
-        "Please make use use of their formal lean4 code, which contains relevant lean4 "
-        "hypothesis and type declarations you may use:"
-    )
-    parts: List[str] = []
-    for dep_id in dependencies:
-        dep = nodes.get(dep_id)
-        if dep is None:
-            continue
-        formalization = dep.get("formalization") or {}
-        if formalization.get("lean_code") and formalization.get("lean_pass"):
-            parts.append("\n")
-            parts.append(_remove_imports(formalization["lean_code"]))
-        else:
-            parts.append(
-                "\nDependency step "
-                f"{dep_id} is provided in natural language: \"{dep.get('statement', '')}\". "
-                "Please formalize it as part of your current lemma's hypotheses."
-            )
-
-    if not parts:
-        return ""
-
-    footer = (
-        "\nFocus on the original formalization task I gave you and use the previous Lean codes, "
-        "extra context, type declarations, variables domains, etc. You can assume the "
-        "information is correct. Make use of it!"
-    )
-    return (intro + "\n".join(parts) + footer).strip()
-
-
 def _load_jsonl(path: Path) -> List[JsonDict]:
     rows: List[JsonDict] = []
     with open(path, encoding="utf-8") as f:
@@ -99,12 +47,7 @@ def _extract_nodes(rec: JsonDict, source: str) -> List[JsonDict]:
         raise ValueError(f"Selected record has empty {source} items and no fallback list")
 
     if graph_mode != FDG_GRAPH_MODE:
-        nodes_dict = {n["id"]: n for n in nodes if "id" in n}
-        for n in nodes:
-            if "formalization" not in n or not isinstance(n["formalization"], dict):
-                n["formalization"] = {}
-            if not n["formalization"].get("dependency_context_block"):
-                n["formalization"]["dependency_context_block"] = _build_dependency_context(n, nodes_dict)
+        raise ValueError(f"Only FDG records are supported, got graph_mode={graph_mode!r}")
     return nodes
 
 

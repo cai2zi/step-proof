@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from proofflow.fdg_graph import build_proof_obligation_from_fact, validate_fdg
-from proofflow.graph_mode import FDG_GRAPH_MODE, LEGACY_GRAPH_MODE, record_graph_mode
+from proofflow.graph_mode import FDG_GRAPH_MODE, record_graph_mode
 
 
 def _alpha_fdg() -> dict:
@@ -80,8 +80,6 @@ def test_build_proof_obligation_from_fact() -> None:
     )
 
 
-def test_record_graph_mode_detects_both_modes() -> None:
-    legacy_record = {"meta": {"graph_mode": LEGACY_GRAPH_MODE}, "graph": {"nodes": []}}
+def test_record_graph_mode_detects_fdg_mode() -> None:
     fdg_record = {"meta": {"graph_mode": FDG_GRAPH_MODE}, "graph": {"facts": []}}
-    assert record_graph_mode(legacy_record) == LEGACY_GRAPH_MODE
     assert record_graph_mode(fdg_record) == FDG_GRAPH_MODE

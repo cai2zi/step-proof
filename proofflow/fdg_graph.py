@@ -381,7 +381,6 @@ def build_fdg_messages(
         raise ValueError("FDG generation requires non-empty problem_text and solution_or_cot.")
     dag_solution = solution_or_cot if include_think_in_dag else strip_think_blocks(solution_or_cot)
     return build_chat_messages(
-        "calc",
         "fdg",
         problem_text=problem_text,
         solution_or_cot=dag_solution,

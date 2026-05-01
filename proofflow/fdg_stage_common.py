@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from .fdg_graph import FDGDocument, build_proof_obligation_from_fact
 from .prompt_builder import build_chat_messages
-from .stage2_common import utc_now_iso
+from .runtime_common import utc_now_iso
 
 
 JsonDict = Dict[str, Any]
@@ -61,29 +61,62 @@ def _ordered_fact_ids(record: RecordState) -> List[str]:
     return list(record["facts"].keys())
 
 
-def build_fdg_form_messages(fact: FactState) -> List[Dict[str, str]]:
+def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
+    header_lines: List[str] = []
+    body_lines: List[str] = []
+    in_body = False
+    for line in lean_code.splitlines():
+        stripped = line.strip()
+        if not in_body and (
+            stripped.startswith("import ")
+            or stripped.startswith("set_option ")
+            or stripped.startswith("open ")
+            or stripped == ""
+        ):
+            header_lines.append(line)
+            continue
+        in_body = True
+        body_lines.append(line)
+    return {
+        "lean_header": "\n".join(header_lines).strip(),
+        "lean_body": "\n".join(body_lines).strip(),
+    }
+
+
+def build_fdg_form_messages(
+    fact: FactState,
+    *,
+    prompt_variant: str = "default",
+) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
     problem_name = str(proof_obligation.get("problem_name") or f"prove_{fact['fact_id']}").strip()
     lemma_keyword = "theorem" if fact.get("is_final_answer") else "lemma"
     return build_chat_messages(
-        "calc",
         "formalize_obligation",
+        prompt_variant=prompt_variant,
         lemma_header=f"{lemma_keyword} {problem_name}",
+        paper_theorem_name="test",
         informal_statement_content=str(proof_obligation.get("informal_statement_content", "")).strip(),
     )
 
 
-def build_fdg_prove_messages(fact: FactState) -> List[Dict[str, str]]:
+def build_fdg_prove_messages(
+    fact: FactState,
+    *,
+    prompt_variant: str = "default",
+) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
+    lean_code = (fact.get("formalization") or {}).get("lean_code", "")
     messages = build_chat_messages(
-        "calc",
         "prove",
+        prompt_variant=prompt_variant,
         statement=str(proof_obligation.get("informal_statement_content", "")).strip(),
-        lean_code=(fact.get("formalization") or {}).get("lean_code", ""),
+        lean_code=lean_code,
+        **_split_lean_header_body(lean_code),
     )
     formalization = fact.get("formalization") or {}
     if formalization.get("lean_code") and not formalization.get("lean_pass"):
-        messages[1]["content"] += (
+        messages[-1]["content"] += (
             "\n\nThe previous Lean4 code I sent you contains errors. Please take that into account."
         )
     return messages

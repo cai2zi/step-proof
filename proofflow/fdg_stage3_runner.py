@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -21,7 +22,7 @@ from .fdg_stage_common import (
 )
 from .lean_check import LeanServer
 from .llm_worker import LLMWorkerClient, LLMWorkerConfig
-from .stage2_common import (
+from .runtime_common import (
     append_jsonl,
     extract_last_lean_block,
     load_done_ids,
@@ -39,7 +40,10 @@ DEFAULT_GPUS = os.getenv(
     "STAGE3_GPUS",
     os.getenv("STAGE2_GPUS", os.getenv("GRAPH_GPUS", "0,1,2,3")),
 )
+DEFAULT_PROVER_GPUS = os.getenv("PROVER_GPUS", "")
+DEFAULT_PROVER_TP = int(os.getenv("PROVER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
+DEFAULT_LEAN_BACKEND = os.getenv("LEAN_BACKEND", "subprocess")
 
 
 class FDGStage3Runner:
@@ -116,6 +120,7 @@ class FDGStage3Runner:
             else:
                 record = fresh_fdg_stage3_record_state(row)
 
+            self._ensure_prompt_meta(record)
             self.records[record_id] = record
             loaded += 1
             if self.args.limit >= 0 and loaded >= self.args.limit:
@@ -126,6 +131,17 @@ class FDGStage3Runner:
         print(f"[resume] Partially completed records loaded: {partial_count}")
         print(f"[resume] Facts already proved/skipped: {prove_done}")
         print(f"[resume] Total pending records to process: {loaded}\n")
+
+    def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
+        prompt = str(getattr(self.args, "prover_prompt", "default") or "default")
+        existing = str((record.get("meta") or {}).get("prover_prompt") or "")
+        if existing and existing != prompt:
+            rid = (record.get("meta") or {}).get("record_id", "<unknown>")
+            raise RuntimeError(
+                f"Record {rid} checkpoint was created with prover_prompt={existing!r}, "
+                f"but current config uses {prompt!r}. Use a new exp.name or disable resume."
+            )
+        record.setdefault("meta", {})["prover_prompt"] = prompt
 
     def _resolve_prover_gpus(self) -> str:
         if self.args.prover_gpus:
@@ -284,7 +300,10 @@ class FDGStage3Runner:
                     continue
                 fact["prove_status"] = "running"
                 if not fact.get("prove_messages"):
-                    fact["prove_messages"] = build_fdg_prove_messages(fact)
+                    fact["prove_messages"] = build_fdg_prove_messages(
+                        fact,
+                        prompt_variant=self.args.prover_prompt,
+                    )
                 attempt_num = int(fact.get("prove_retries_used", 0)) + 1
                 tasks.append(
                     {
@@ -470,3 +489,92 @@ class FDGStage3Runner:
 
         done = sum(1 for record in self.records.values() if fdg_stage3_record_terminal(record))
         print(f"\n[done] completed={done} out={self.out_path} failed={self.failed_path}")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="FDG Stage 3 (batch + local vLLM): prove formalized FDG facts.",
+    )
+    parser.add_argument(
+        "--infile",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage2_results.jsonl",
+        help="Stage 2 FDG formalization JSONL",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_results.jsonl",
+        help="Stage 3 final results JSONL",
+    )
+    parser.add_argument(
+        "--failed",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_failed.jsonl",
+        help="Stage 3 fatal failures JSONL",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "stage3_ckpt",
+        help="Checkpoint directory for partial record states",
+    )
+    parser.add_argument("--limit", type=int, default=-1, help="Max NEW records to process")
+    parser.add_argument("--no-resume", action="store_true", help="Ignore prior outputs/checkpoints")
+
+    parser.add_argument("--mathlib-path", default=DEFAULT_MATHLIB_PATH)
+    parser.add_argument(
+        "--lean-backend",
+        default=DEFAULT_LEAN_BACKEND,
+        choices=["subprocess", "persistent_lsp"],
+    )
+    parser.add_argument("--lean-check-concurrency", type=int, default=16)
+    parser.add_argument("--lean-worker-pool-size", type=int, default=0)
+    parser.add_argument(
+        "--lean-temp-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent / "calc_runs" / "lean_jobs",
+    )
+
+    parser.add_argument("--gpus", default=DEFAULT_GPUS)
+    parser.add_argument("--prover-gpus", default=DEFAULT_PROVER_GPUS)
+    parser.add_argument("--dtype", default="float16")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--batch-wait-ms", type=int, default=200)
+    parser.add_argument(
+        "--max-pending-validation-batches",
+        type=int,
+        default=4,
+        help="Max generated prove batches allowed to wait for Lean validation.",
+    )
+
+    parser.add_argument("--prover-model-path", default=DEFAULT_PROVER_MODEL_PATH)
+    parser.add_argument("--prover-tensor-parallel-size", type=int, default=DEFAULT_PROVER_TP)
+    parser.add_argument("--prover-max-tokens", type=int, default=8192)
+    parser.add_argument("--prover-token-limit", type=int, default=32768)
+    parser.add_argument("--prover-temperature", type=float, default=0.0)
+    parser.add_argument("--prover-top-p", type=float, default=1.0)
+    parser.add_argument("--prover-presence-penalty", type=float, default=0.0)
+    parser.add_argument("--prover-frequency-penalty", type=float, default=0.0)
+    parser.add_argument("--prover-seed", type=int, default=42)
+    parser.add_argument("--prover-top-k", type=int, default=20)
+    parser.add_argument(
+        "--prover-chat-template-kwargs-json",
+        default=None,
+        help='JSON object for tokenizer.apply_chat_template (default: {"enable_thinking": false})',
+    )
+    parser.add_argument(
+        "--prover-prompt",
+        default="default",
+        choices=["default", "paper_goedel_v2"],
+        help="Prover prompt variant.",
+    )
+    parser.add_argument("--prover-retries", type=int, default=3)
+    parser.add_argument("--prove-batch-size", type=int, default=64)
+    parser.add_argument(
+        "--metrics-out",
+        type=Path,
+        default=None,
+        help="Optional JSON file for stage runtime metrics.",
+    )
+    return parser

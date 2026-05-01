@@ -9,15 +9,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from kimina_client import (
-    CheckResponse,
-    KiminaClient,
-    ReplResponse,
-    Snippet,
-    SnippetStatus,
-)
-
-from .utils import remove_imports
+try:
+    from kimina_client import CheckResponse, KiminaClient, ReplResponse, Snippet, SnippetStatus
+except ModuleNotFoundError:
+    CheckResponse = Any  # type: ignore[misc, assignment]
+    ReplResponse = Any  # type: ignore[misc, assignment]
+    SnippetStatus = Any  # type: ignore[misc, assignment]
+    KiminaClient = None  # type: ignore[assignment]
+    Snippet = None  # type: ignore[assignment]
 
 
 def extract_errors(text):
@@ -43,6 +42,18 @@ def extract_errors(text):
         except Exception as e:
             print("parse failed:", e)
     return errors
+
+
+def remove_imports(lean_code: str) -> str:
+    lines_to_remove = {
+        "import Mathlib",
+        "import Aesop",
+        "set_option maxHeartbeats 0",
+        "open BigOperators Real Nat Topology Rat Filter",
+    }
+    return "\n".join(
+        line for line in lean_code.split("\n") if line.strip() not in lines_to_remove
+    ).strip()
 
 
 # --- Provided helper functions from the user's prompt ---
@@ -228,6 +239,8 @@ def verify_lean_lemma_server(
     Verifies a Lean lemma using a remote server API.
     The client object is now passed to this function.
     """
+    if Snippet is None:
+        return False, False, "kimina_client is not installed; remote Lean server mode is unavailable."
     full_code = f"{LEAN_LIBRARIES}\n\n{lean_string}" if add_imports else lean_string
 
     snippets = [
@@ -896,6 +909,10 @@ class LeanServer:
                 raise ValueError(f"Unsupported local Lean backend: {self.backend}")
             print("LeanServer initialized in LOCAL mode.")
         elif api_url:
+            if KiminaClient is None:
+                raise RuntimeError(
+                    "kimina_client is not installed; use local Lean mode or install kimina_client."
+                )
             self.mode = "server"
             self.path = api_url
             self.client = KiminaClient(

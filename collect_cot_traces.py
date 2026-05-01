@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode
+from proofflow.graph_mode import ensure_single_graph_mode
 
 JsonDict = Dict[str, Any]
 
@@ -45,35 +45,22 @@ def _item_base(rec: JsonDict, node: JsonDict, stage: str, graph_mode: str) -> Js
     base = _meta(rec)
     base["stage"] = stage
     base["graph_mode"] = graph_mode
-    if graph_mode == FDG_GRAPH_MODE:
-        base.update(
-            {
-                "fact_id": node.get("fact_id", ""),
-                "text": node.get("text", ""),
-                "parent_fact_ids": node.get("parent_fact_ids", []),
-                "origin": node.get("origin", ""),
-                "is_final_answer": node.get("is_final_answer", False),
-                "proof_obligation": node.get("proof_obligation", {}),
-            }
-        )
-    else:
-        base.update(
-            {
-                "node_id": node.get("id", ""),
-                "role": node.get("role", ""),
-                "node_type": node.get("node_type", ""),
-                "needs_verification": node.get("needs_verification"),
-                "statement": node.get("statement", ""),
-                "natural_language": node.get("natural_language", ""),
-            }
-        )
+    base.update(
+        {
+            "fact_id": node.get("fact_id", ""),
+            "text": node.get("text", ""),
+            "parent_fact_ids": node.get("parent_fact_ids", []),
+            "origin": node.get("origin", ""),
+            "is_final_answer": node.get("is_final_answer", False),
+            "proof_obligation": node.get("proof_obligation", {}),
+        }
+    )
     return base
 
 
 def _formal_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str) -> Iterable[JsonDict]:
-    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in rows:
-        for node in rec.get("results", {}).get(key, []) or []:
+        for node in rec.get("results", {}).get("facts", []) or []:
             formalization = node.get("formalization") or {}
             out = _item_base(rec, node, "formal", graph_mode)
             out.update(
@@ -94,9 +81,8 @@ def _formal_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: st
 
 
 def _prove_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str) -> Iterable[JsonDict]:
-    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in rows:
-        for node in rec.get("results", {}).get(key, []) or []:
+        for node in rec.get("results", {}).get("facts", []) or []:
             solved = node.get("solved_lemma") or {}
             out = _item_base(rec, node, "prove", graph_mode)
             out.update(
@@ -115,9 +101,8 @@ def _prove_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str
 
 
 def _record_summary_rows(stage3_rows: Iterable[JsonDict], graph_mode: str) -> Iterable[JsonDict]:
-    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
     for rec in stage3_rows:
-        nodes = rec.get("results", {}).get(key, []) or []
+        nodes = rec.get("results", {}).get("facts", []) or []
         summary = _meta(rec)
         summary.update(
             {

@@ -7,7 +7,7 @@ eagerly import optional Lean/Kimina dependencies.
 from __future__ import annotations
 
 __version__ = "1.0.0"
-__all__ = ["ProofFlow", "LLMManager", "LeanServer"]
+__all__ = ["LLMManager", "LeanServer"]
 
 
 def __getattr__(name: str):
@@ -15,10 +15,6 @@ def __getattr__(name: str):
         from .lean_check import LeanServer
 
         return LeanServer
-    if name == "ProofFlow":
-        from .proofflow import ProofFlow
-
-        return ProofFlow
     if name == "LLMManager":
         from .utils import LLMManager
 

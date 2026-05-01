@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode
+from proofflow.graph_mode import ensure_single_graph_mode
 
 
 JsonDict = Dict[str, Any]
@@ -23,39 +23,29 @@ def _load_jsonl(path: Path) -> List[JsonDict]:
 
 
 def _node_fully_verified(node: JsonDict) -> bool:
-    if "fact_id" in node:
-        if node.get("parent_fact_ids"):
-            return bool((node.get("solved_lemma") or {}).get("lean_verify", False))
-        return bool((node.get("formalization") or {}).get("lean_pass", False))
-    role = str(node.get("role", "")).strip()
-    if role in {"condition", "context"}:
-        return bool((node.get("formalization") or {}).get("lean_pass", False))
-    return bool((node.get("solved_lemma") or {}).get("lean_verify", False))
+    if node.get("parent_fact_ids"):
+        return bool((node.get("solved_lemma") or {}).get("lean_verify", False))
+    return bool((node.get("formalization") or {}).get("lean_pass", False))
 
 
-def _record_items(rec: JsonDict, graph_mode: str) -> List[JsonDict]:
-    key = "facts" if graph_mode == FDG_GRAPH_MODE else "nodes"
-    items = rec.get("results", {}).get(key, [])
+def _record_items(rec: JsonDict) -> List[JsonDict]:
+    items = rec.get("results", {}).get("facts", [])
     return items if isinstance(items, list) else []
 
 
-def _prove_required_items(items: List[JsonDict], graph_mode: str) -> List[JsonDict]:
-    if graph_mode == FDG_GRAPH_MODE:
-        return [item for item in items if bool(item.get("parent_fact_ids"))]
-    return [item for item in items if int(item.get("needs_verification", 1)) != 0]
+def _prove_required_items(items: List[JsonDict]) -> List[JsonDict]:
+    return [item for item in items if bool(item.get("parent_fact_ids"))]
 
 
-def _form_required_items(items: List[JsonDict], graph_mode: str) -> List[JsonDict]:
-    if graph_mode == FDG_GRAPH_MODE:
-        return [item for item in items if bool(item.get("parent_fact_ids"))]
-    return items
+def _form_required_items(items: List[JsonDict]) -> List[JsonDict]:
+    return [item for item in items if bool(item.get("parent_fact_ids"))]
 
 
-def _record_all_nodes_prove_verified(rec: JsonDict, graph_mode: str) -> bool:
-    nodes = _record_items(rec, graph_mode)
+def _record_all_nodes_prove_verified(rec: JsonDict) -> bool:
+    nodes = _record_items(rec)
     if not nodes:
         return False
-    required_nodes = _prove_required_items(nodes, graph_mode)
+    required_nodes = _prove_required_items(nodes)
     if not required_nodes:
         return False
     return all(
@@ -143,7 +133,7 @@ def main() -> None:
 
     for rec in rows:
         rid = str(rec.get("meta", {}).get("record_id", "")).strip()
-        nodes = _record_items(rec, graph_mode)
+        nodes = _record_items(rec)
         if not isinstance(nodes, list) or not nodes:
             continue
 
@@ -151,14 +141,14 @@ def main() -> None:
         node_count = len(nodes)
         total_nodes += node_count
 
-        prove_required_nodes = _prove_required_items(nodes, graph_mode)
+        prove_required_nodes = _prove_required_items(nodes)
         prove_required_count = len(prove_required_nodes)
         prove_verified = sum(
             1
             for node in prove_required_nodes
             if bool((node.get("solved_lemma") or {}).get("lean_verify", False))
         )
-        form_required_nodes = _form_required_items(nodes, graph_mode)
+        form_required_nodes = _form_required_items(nodes)
         form_required_count = len(form_required_nodes)
         form_verified = sum(
             1
@@ -182,18 +172,10 @@ def main() -> None:
         form_ratio_hist[form_bucket] += 1
         prove_bucket_ids[prove_bucket].append(rid)
 
-        if _record_all_nodes_prove_verified(rec, graph_mode):
+        if _record_all_nodes_prove_verified(rec):
             passed_ids.append(rid)
 
-        if graph_mode == FDG_GRAPH_MODE:
-            final_nodes_required = [node for node in nodes if bool(node.get("is_final_answer"))]
-        else:
-            final_nodes_required = [
-                node
-                for node in nodes
-                if str(node.get("role", "")).strip() == "final"
-                and int(node.get("needs_verification", 1)) != 0
-            ]
+        final_nodes_required = [node for node in nodes if bool(node.get("is_final_answer"))]
         final_wrong = any(
             not bool((node.get("solved_lemma") or {}).get("lean_verify", False))
             for node in final_nodes_required

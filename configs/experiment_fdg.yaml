@@ -16,7 +16,7 @@ stage1:
   id_column: id
   question_column: question
   response_column: response
-  limit: 1000
+  limit: 100
   model_path: /root/autodl-tmp/models/Qwen3-32B
   tensor_parallel_size: 4
   gpus: 0,1,2,3
@@ -34,11 +34,6 @@ stage1:
     enable_thinking: true
   batch_size: 512
   max_retries: 3
-  graph_mode: fdg
-  id_schema_mode: calc
-  validation_profile: strict
-  follow_dag: true
-  allow_graph_rewrite_after: 3
   include_think_in_dag: false
 
 lean_runtime:
@@ -49,12 +44,9 @@ lean_runtime:
   lean_temp_dir: lean_jobs_shared
 
 stage2:
-  include_parent_statement: false
-  include_parent_nl: false
   gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
-  id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
   formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
@@ -69,6 +61,7 @@ stage2:
   formalizer_top_k: 20
   formalizer_chat_template_kwargs:
     enable_thinking: true
+  formalizer_prompt: default
   formalizer_retries: 3
   form_batch_size: 128
   limit: -1
@@ -77,7 +70,6 @@ stage3:
   gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
-  id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
   prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
@@ -92,6 +84,7 @@ stage3:
   prover_top_k: 20
   prover_chat_template_kwargs:
     enable_thinking: true
+  prover_prompt: default
   prover_retries: 3
   prove_batch_size: 128
   limit: -1

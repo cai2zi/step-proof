@@ -18,7 +18,6 @@ from proofflow.vis import (
     create_interactive_visualization,
 )
 from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode, extract_record_items
-from proofflow.stage2_common import build_dependency_context
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -166,12 +165,7 @@ def _extract_nodes(rec: Dict[str, Any], source: str) -> List[Dict[str, Any]]:
         raise SystemExit(f"Selected record has empty {source} items and no fallback list")
 
     if graph_mode != FDG_GRAPH_MODE:
-        nodes_dict = {n["id"]: n for n in nodes if "id" in n}
-        for n in nodes:
-            if "formalization" not in n or not isinstance(n["formalization"], dict):
-                n["formalization"] = {}
-            if not n["formalization"].get("dependency_context_block"):
-                n["formalization"]["dependency_context_block"] = build_dependency_context(n, nodes_dict)
+        raise SystemExit(f"Only FDG records are supported, got graph_mode={graph_mode!r}")
 
     return nodes
 
@@ -223,7 +217,7 @@ def main() -> None:
         "--source",
         choices=("results", "graph"),
         default="results",
-        help="Which node list to visualize: results.nodes or graph.nodes",
+        help="Which fact list to visualize: results.facts or graph.facts",
     )
     parser.add_argument(
         "--graph-only",

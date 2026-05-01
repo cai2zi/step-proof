@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -29,16 +29,8 @@ from proofflow.fdg_graph import (
     fdg_topo_order,
     parse_and_validate_fdg,
 )
-from proofflow.graph_mode import FDG_GRAPH_MODE, LEGACY_GRAPH_MODE
-from proofflow.node_schema import infer_role, is_final, is_structural_final
+from proofflow.graph_mode import FDG_GRAPH_MODE
 from proofflow.local_vllm import LocalLLMManager
-from proofflow.proof_graph import (
-    ProofGraphItem,
-    append_error_to_messages,
-    build_graph_messages,
-    parse_and_validate_graph,
-    try_orphan_drop_recovery,
-)
 
 load_dotenv()
 
@@ -60,7 +52,6 @@ class PendingRecord:
     source_row_pos: int
     messages: List[Dict[str, str]]
     retry_count: int = 0
-    last_parsed_graph: Optional[List[dict]] = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -98,57 +89,6 @@ def _rel_source_file(parquet_dir: Path, fp: Path) -> str:
         return str(fp.resolve())
 
 
-def _topo_order_from_nodes(nodes: List[Dict[str, Any]]) -> List[str]:
-    ids = [n["id"] for n in nodes]
-    id_set = set(ids)
-    succ: Dict[str, List[str]] = {i: [] for i in id_set}
-    indeg: Dict[str, int] = {i: 0 for i in id_set}
-    for n in nodes:
-        for d in (n.get("dependencies") or []):
-            if d in id_set:
-                indeg[n["id"]] += 1
-                succ[d].append(n["id"])
-
-    q = deque(sorted(i for i in id_set if indeg[i] == 0))
-    order: List[str] = []
-    while q:
-        u = q.popleft()
-        order.append(u)
-        for v in sorted(succ[u]):
-            indeg[v] -= 1
-            if indeg[v] == 0:
-                q.append(v)
-    return order if len(order) == len(id_set) else list(ids)
-
-
-def _serialize_graph_nodes(
-    proof_items: List[ProofGraphItem],
-    id_schema_mode: str,
-) -> List[Dict[str, Any]]:
-    out = []
-    for item in proof_items:
-        nt = getattr(item, "node_type", None)
-        nv = getattr(item, "needs_verification", None)
-        out.append({
-            "id": item.id,
-            "role": infer_role(item.id, nt, mode=id_schema_mode),
-            "node_type": nt or "",
-            "natural_language": item.natural_language,
-            "statement": item.statement,
-            "dependencies": list(item.dependencies or []),
-            "needs_verification": nv,
-        })
-    return out
-
-
-def _final_node_ids(nodes: List[Dict[str, Any]], id_schema_mode: str) -> List[str]:
-    return sorted(
-        n["id"] for n in nodes
-        if is_structural_final(n["id"], id_schema_mode)
-        or is_final(n["id"], n.get("node_type") or None, id_schema_mode)
-    )
-
-
 def load_done_ids(out_path: Path) -> set:
     """Read already-completed record_ids from an existing output JSONL."""
     done: set = set()
@@ -172,43 +112,6 @@ def load_done_ids(out_path: Path) -> set:
 # ---------------------------------------------------------------------------
 # Payload builder
 # ---------------------------------------------------------------------------
-
-def _build_legacy_payload(
-    record: PendingRecord,
-    items: List[ProofGraphItem],
-    id_schema_mode: str,
-    tries: int,
-    include_think_in_dag: bool,
-    extraction_response: Optional[str],
-) -> Dict[str, Any]:
-    nodes = _serialize_graph_nodes(items, id_schema_mode)
-    return {
-        "meta": {
-            "schema_version": "graph-v1",
-            "graph_mode": LEGACY_GRAPH_MODE,
-            "record_id": record.record_id,
-            "task_profile": "calc",
-            "source_file": record.source_file,
-            "source_row_pos": record.source_row_pos,
-            "created_at": _utc_now_iso(),
-            "graph_build_tries": tries,
-            "id_schema_mode": id_schema_mode,
-            "include_think_in_dag": include_think_in_dag,
-        },
-        "input": {
-            "problem": record.problem,
-            "raw_cot": record.raw_cot,
-        },
-        "extraction": {
-            "raw_response": extraction_response,
-        },
-        "graph": {
-            "nodes": nodes,
-            "topo_order": _topo_order_from_nodes(nodes),
-            "final_nodes": _final_node_ids(nodes, id_schema_mode),
-        },
-    }
-
 
 def _build_fdg_payload(
     record: PendingRecord,
@@ -244,6 +147,17 @@ def _build_fdg_payload(
             "validation_warnings": validation_warnings,
         },
     }
+
+
+def append_error_to_messages(messages: List[Dict[str, str]], error_msg: str) -> List[Dict[str, str]]:
+    updated = list(messages)
+    updated.append(
+        {
+            "role": "user",
+            "content": f"The previous FDG JSON was invalid: {error_msg}\nPlease correct it and output only valid FDG JSON.",
+        }
+    )
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -301,22 +215,13 @@ def main() -> None:
     # Batch / retry
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-retries", type=int, default=3)
-    # Graph options
-    parser.add_argument(
-        "--graph-mode",
-        choices=(LEGACY_GRAPH_MODE, FDG_GRAPH_MODE),
-        default=LEGACY_GRAPH_MODE,
-    )
-    parser.add_argument("--id-schema-mode", default="calc")
-    parser.add_argument("--validation-profile", default="strict")
-    parser.add_argument("--follow-dag", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--allow-graph-rewrite-after", type=int, default=3)
+    # FDG options
     parser.add_argument(
         "--include-think-in-dag",
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Allow DAG extraction to see <think>...</think> content in the response. "
+            "Allow FDG extraction to see <think>...</think> content in the response. "
             "Use --no-include-think-in-dag to hide think blocks from the graph model; "
             "the full raw_cot is still written to output JSONL."
         ),
@@ -394,19 +299,11 @@ def main() -> None:
                 continue
             if raw_cot is None or (isinstance(raw_cot, float) and pd.isna(raw_cot)):
                 continue
-            if args.graph_mode == FDG_GRAPH_MODE:
-                msgs = build_fdg_messages(
-                    problem_text=str(problem),
-                    solution_or_cot=str(raw_cot),
-                    include_think_in_dag=args.include_think_in_dag,
-                )
-            else:
-                msgs = build_graph_messages(
-                    task_profile="calc",
-                    problem=str(problem),
-                    raw_cot=str(raw_cot),
-                    include_think_in_dag=args.include_think_in_dag,
-                )
+            msgs = build_fdg_messages(
+                problem_text=str(problem),
+                solution_or_cot=str(raw_cot),
+                include_think_in_dag=args.include_think_in_dag,
+            )
             new_count += 1
             return PendingRecord(
                 record_id=record_id,
@@ -463,89 +360,42 @@ def main() -> None:
                     continue
 
                 # ── parse + validate ────────────────────────────────────────
-                if args.graph_mode == FDG_GRAPH_MODE:
-                    result = parse_and_validate_fdg(content)
-                else:
-                    result = parse_and_validate_graph(
-                        content=content,
-                        id_schema_mode=args.id_schema_mode,
-                        validation_profile=args.validation_profile,
-                        follow_dag=args.follow_dag,
-                        attempt=record.retry_count,
-                        allow_graph_rewrite_after=args.allow_graph_rewrite_after,
-                    )
+                result = parse_and_validate_fdg(content)
 
                 if result.ok:
-                    if args.graph_mode == FDG_GRAPH_MODE:
-                        payload = _build_fdg_payload(
-                            record,
-                            result.document,
-                            record.retry_count + 1,
-                            args.include_think_in_dag,
-                            content,
-                            list((result.report or {}).get("warnings") or []),
-                        )
-                    else:
-                        payload = _build_legacy_payload(
-                            record,
-                            result.items,
-                            args.id_schema_mode,
-                            record.retry_count + 1,
-                            args.include_think_in_dag,
-                            content,
-                        )
+                    payload = _build_fdg_payload(
+                        record,
+                        result.document,
+                        record.retry_count + 1,
+                        args.include_think_in_dag,
+                        content,
+                        list((result.report or {}).get("warnings") or []),
+                    )
                     graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     graphs_f.flush()
                     stats["ok"] += 1
                     print(f"  [ok]    {record.record_id}  (tries={record.retry_count + 1})")
                     continue
 
-                # keep last_parsed_graph for orphan-drop
-                if args.graph_mode == LEGACY_GRAPH_MODE and result.last_parsed_graph is not None:
-                    record.last_parsed_graph = result.last_parsed_graph
-
                 # ── max retries reached → orphan-drop fallback ──────────────
                 if record.retry_count >= args.max_retries:
-                    recovered = None
-                    if args.graph_mode == LEGACY_GRAPH_MODE and record.last_parsed_graph:
-                        recovered = try_orphan_drop_recovery(
-                            last_parsed_graph=record.last_parsed_graph,
-                            id_schema_mode=args.id_schema_mode,
-                            validation_profile=args.validation_profile,
-                            follow_dag=args.follow_dag,
-                            max_retries=args.max_retries,
-                        )
-                    if recovered is not None:
-                        payload = _build_legacy_payload(
-                            record,
-                            recovered,
-                            args.id_schema_mode,
-                            record.retry_count + 1,
-                            args.include_think_in_dag,
-                            content,
-                        )
-                        graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                        graphs_f.flush()
-                        stats["ok"] += 1
-                        print(f"  [ok]    {record.record_id}  (orphan-drop recovery)")
-                    else:
-                        failed_f.write(json.dumps({
-                            "record_id": record.record_id,
-                            "source_file": record.source_file,
-                            "source_row_pos": record.source_row_pos,
-                            "retry_count": record.retry_count,
-                            "last_error": result.error_msg,
-                            "input": {
-                                "problem": record.problem,
-                                "raw_cot": record.raw_cot,
-                            },
-                            "extraction": {
-                                "raw_response": content,
-                            },
-                        }, ensure_ascii=False) + "\n")
-                        failed_f.flush()
-                        stats["failed"] += 1
-                        print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
+                    failed_f.write(json.dumps({
+                        "record_id": record.record_id,
+                        "source_file": record.source_file,
+                        "source_row_pos": record.source_row_pos,
+                        "retry_count": record.retry_count,
+                        "last_error": result.error_msg,
+                        "input": {
+                            "problem": record.problem,
+                            "raw_cot": record.raw_cot,
+                        },
+                        "extraction": {
+                            "raw_response": content,
+                        },
+                    }, ensure_ascii=False) + "\n")
+                    failed_f.flush()
+                    stats["failed"] += 1
+                    print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
                     continue
 
                 # ── retry: update messages and put back in pool ─────────────

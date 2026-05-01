@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 
 from .graph_mode import item_dependencies, item_id
-from .node_schema import ROLE_CLAIM, ROLE_CONDITION, ROLE_CONTEXT, ROLE_FINAL, infer_role
 
 
 def _get_item_value(item, key, default=None):
@@ -49,17 +48,7 @@ def build_dag(data):
         if "fact_id" in node_dict:
             item_type = "solution" if node_dict.get("is_final_answer") else "fact"
         else:
-            role = infer_role(node_id, _get_item_value(item, "node_type"), mode="auto")
-            if role == ROLE_CONDITION:
-                item_type = "condition"
-            elif role == ROLE_FINAL:
-                item_type = "solution"
-            elif role == ROLE_CONTEXT:
-                item_type = "definition"
-            elif role == ROLE_CLAIM:
-                item_type = "lemma"
-            else:
-                item_type = "unknown"
+            item_type = "unknown"
         
         # Add type field to the item
         item_dict = node_dict

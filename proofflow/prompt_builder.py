@@ -1,11 +1,11 @@
-"""Load and render system/user prompt templates under prompts/{proof,calc}/."""
+"""Load and render system/user prompt templates under prompts/."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
-TaskProfile = Literal["proof", "calc"]
+PromptStage = Literal["fdg", "formalize_obligation", "prove"]
 
 _PROMPTS_ROOT = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -21,6 +21,11 @@ def _read(rel: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _stage_file(role: str, stage: PromptStage, variant: str) -> str:
+    suffix = "" if variant == "default" else f".{variant}"
+    return f"{role}/{stage}{suffix}.md"
+
+
 def render_template(template: str, **kwargs: Any) -> str:
     try:
         return template.format(**kwargs)
@@ -29,43 +34,17 @@ def render_template(template: str, **kwargs: Any) -> str:
 
 
 def build_chat_messages(
-    profile: TaskProfile,
-    stage: Literal[
-        "dag",
-        "fdg",
-        "formalize_claim",
-        "formalize_context",
-        "formalize_obligation",
-        "prove",
-        "prove_negation",
-    ],
+    stage: PromptStage,
+    *,
+    prompt_variant: str = "default",
     **kwargs: Any,
 ) -> List[Dict[str, str]]:
-    """Return [system, user] messages for the given profile and stage."""
-    if stage == "dag":
-        system = _read(f"{profile}/system/dag.md")
-        user = render_template(_read(f"{profile}/user/dag.md"), **kwargs)
-    elif stage == "fdg":
-        system = _read(f"{profile}/system/fdg.md")
-        user = render_template(_read(f"{profile}/user/fdg.md"), **kwargs)
-    elif stage == "formalize_claim":
-        system = _read(f"{profile}/system/formalize.md")
-        user = render_template(_read(f"{profile}/user/formalize_claim.md"), **kwargs)
-    elif stage == "formalize_context":
-        system = _read(f"{profile}/system/formalize.md")
-        user = render_template(_read(f"{profile}/user/formalize_context.md"), **kwargs)
-    elif stage == "formalize_obligation":
-        system = _read(f"{profile}/system/formalize_obligation.md")
-        user = render_template(_read(f"{profile}/user/formalize_obligation.md"), **kwargs)
-    elif stage == "prove":
-        system = _read(f"{profile}/system/prove.md")
-        user = render_template(_read(f"{profile}/user/prove.md"), **kwargs)
-    elif stage == "prove_negation":
-        system = _read(f"{profile}/system/prove.md")
-        user = render_template(_read(f"{profile}/user/prove_negation.md"), **kwargs)
-    else:
-        raise ValueError(f"Unknown prompt stage: {stage}")
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    """Return chat messages for the given FDG prompt stage and variant."""
+    variant = (prompt_variant or "default").strip()
+    system = _read(_stage_file("system", stage, variant))
+    user = render_template(_read(_stage_file("user", stage, variant)), **kwargs)
+    messages: List[Dict[str, str]] = []
+    if system.strip():
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user})
+    return messages

@@ -19,11 +19,9 @@ from hydra.core.hydra_config import HydraConfig  # type: ignore[import-not-found
 from omegaconf import DictConfig, OmegaConf  # type: ignore[import-not-found]
 
 from proofflow.experiment_lean_runtime import ExperimentLeanRuntime, LeanRuntimeConfig
-from proofflow.fdg_stage2_runner import FDGStage2Runner
-from proofflow.fdg_stage3_runner import FDGStage3Runner
-from proofflow.graph_mode import FDG_GRAPH_MODE, detect_graph_mode_from_jsonl
-from proofflow.stage2_runner import Stage2Runner, build_arg_parser as build_stage2_arg_parser
-from proofflow.stage3_runner import Stage3Runner, build_arg_parser as build_stage3_arg_parser
+from proofflow.fdg_stage2_runner import FDGStage2Runner, build_arg_parser as build_stage2_arg_parser
+from proofflow.fdg_stage3_runner import FDGStage3Runner, build_arg_parser as build_stage3_arg_parser
+from proofflow.graph_mode import ensure_fdg_jsonl
 
 
 JsonDict = Dict[str, Any]
@@ -429,15 +427,6 @@ class ExperimentRunner:
             _cmd_value(cfg.batch_size),
             "--max-retries",
             _cmd_value(cfg.max_retries),
-            "--graph-mode",
-            _cmd_value(cfg.graph_mode),
-            "--id-schema-mode",
-            _cmd_value(cfg.id_schema_mode),
-            "--validation-profile",
-            _cmd_value(cfg.validation_profile),
-            "--allow-graph-rewrite-after",
-            _cmd_value(cfg.allow_graph_rewrite_after),
-            _bool_flag(bool(cfg.follow_dag), "follow-dag"),
             _bool_flag(bool(cfg.include_think_in_dag), "include-think-in-dag"),
         ]
         chat_kwargs = _json_arg(cfg.chat_template_kwargs)
@@ -472,8 +461,6 @@ class ExperimentRunner:
             _cmd_value(lean_cfg.lean_check_concurrency),
             "--lean-worker-pool-size",
             _cmd_value(lean_cfg.lean_worker_pool_size),
-            _bool_flag(bool(cfg.include_parent_statement), "include-parent-statement"),
-            _bool_flag(bool(cfg.include_parent_nl), "include-parent-nl"),
             "--lean-temp-dir",
             str(self.shared_lean_temp_dir),
             "--gpus",
@@ -482,8 +469,6 @@ class ExperimentRunner:
             _cmd_value(cfg.dtype),
             "--gpu-memory-utilization",
             _cmd_value(cfg.gpu_memory_utilization),
-            "--id-schema-mode",
-            _cmd_value(cfg.id_schema_mode),
             "--batch-wait-ms",
             _cmd_value(cfg.batch_wait_ms),
             "--max-pending-validation-batches",
@@ -510,6 +495,8 @@ class ExperimentRunner:
             _cmd_value(cfg.formalizer_top_k),
             "--formalizer-retries",
             _cmd_value(cfg.formalizer_retries),
+            "--formalizer-prompt",
+            _cmd_value(cfg.formalizer_prompt),
             "--form-batch-size",
             _cmd_value(cfg.form_batch_size),
             "--metrics-out",
@@ -555,8 +542,6 @@ class ExperimentRunner:
             _cmd_value(cfg.dtype),
             "--gpu-memory-utilization",
             _cmd_value(cfg.gpu_memory_utilization),
-            "--id-schema-mode",
-            _cmd_value(cfg.id_schema_mode),
             "--batch-wait-ms",
             _cmd_value(cfg.batch_wait_ms),
             "--max-pending-validation-batches",
@@ -583,6 +568,8 @@ class ExperimentRunner:
             _cmd_value(cfg.prover_top_k),
             "--prover-retries",
             _cmd_value(cfg.prover_retries),
+            "--prover-prompt",
+            _cmd_value(cfg.prover_prompt),
             "--prove-batch-size",
             _cmd_value(cfg.prove_batch_size),
             "--metrics-out",
@@ -600,18 +587,16 @@ class ExperimentRunner:
             raise RuntimeError(f"--infile not found: {args.infile}")
         if not Path(args.mathlib_path).is_dir():
             raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
-        graph_mode = detect_graph_mode_from_jsonl(args.infile)
-        runner_cls = FDGStage2Runner if graph_mode == FDG_GRAPH_MODE else Stage2Runner
-        return runner_cls(args, lean_server=runtime.lean_server, owned_lean_server=False)
+        ensure_fdg_jsonl(args.infile)
+        return FDGStage2Runner(args, lean_server=runtime.lean_server, owned_lean_server=False)
 
     def _build_stage3_runner(self, args: argparse.Namespace, runtime: ExperimentLeanRuntime):
         if not args.infile.is_file():
             raise RuntimeError(f"--infile not found: {args.infile}")
         if not Path(args.mathlib_path).is_dir():
             raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
-        graph_mode = detect_graph_mode_from_jsonl(args.infile)
-        runner_cls = FDGStage3Runner if graph_mode == FDG_GRAPH_MODE else Stage3Runner
-        return runner_cls(args, lean_server=runtime.lean_server, owned_lean_server=False)
+        ensure_fdg_jsonl(args.infile)
+        return FDGStage3Runner(args, lean_server=runtime.lean_server, owned_lean_server=False)
 
     async def _run_shared_lean_stages(self, *, run_stage2: bool, run_stage3: bool) -> None:
         runtime = ExperimentLeanRuntime(self._build_shared_lean_runtime_config())
