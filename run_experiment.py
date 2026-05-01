@@ -600,34 +600,83 @@ class ExperimentRunner:
         ensure_fdg_jsonl(args.infile)
         return FDGStage3Runner(args, lean_server=runtime.lean_server, owned_lean_server=False)
 
+    async def _run_stage2_stage3_with_runtime(
+        self,
+        runtime: ExperimentLeanRuntime,
+        *,
+        run_stage2: bool,
+        run_stage3: bool,
+    ) -> None:
+        await runtime.ensure_ready()
+        if run_stage2:
+            stage2_cmd = self._build_stage2_cmd()
+            stage2_args = build_stage2_arg_parser().parse_args(stage2_cmd[3:])
+            runner = self._build_stage2_runner(stage2_args, runtime)
+            await self._run_inprocess_stage("stage2", stage2_cmd, runner.run)
+        if run_stage3:
+            stage3_cmd = self._build_stage3_cmd()
+            stage3_args = build_stage3_arg_parser().parse_args(stage3_cmd[3:])
+            runner = self._build_stage3_runner(stage3_args, runtime)
+            await self._run_inprocess_stage("stage3", stage3_cmd, runner.run)
+
     async def _run_shared_lean_stages(self, *, run_stage2: bool, run_stage3: bool) -> None:
         runtime = ExperimentLeanRuntime(self._build_shared_lean_runtime_config())
         try:
-            await runtime.ensure_ready()
-            if run_stage2:
-                stage2_cmd = self._build_stage2_cmd()
-                stage2_args = build_stage2_arg_parser().parse_args(stage2_cmd[3:])
-                runner = self._build_stage2_runner(stage2_args, runtime)
-                await self._run_inprocess_stage("stage2", stage2_cmd, runner.run)
-            if run_stage3:
-                stage3_cmd = self._build_stage3_cmd()
-                stage3_args = build_stage3_arg_parser().parse_args(stage3_cmd[3:])
-                runner = self._build_stage3_runner(stage3_args, runtime)
-                await self._run_inprocess_stage("stage3", stage3_cmd, runner.run)
+            await self._run_stage2_stage3_with_runtime(
+                runtime,
+                run_stage2=run_stage2,
+                run_stage3=run_stage3,
+            )
+        finally:
+            await runtime.aclose()
+
+    async def _run_stage1_then_shared_lean_stages(
+        self,
+        *,
+        run_stage2: bool,
+        run_stage3: bool,
+    ) -> None:
+        runtime = ExperimentLeanRuntime(self._build_shared_lean_runtime_config())
+        prewarm_task = asyncio.create_task(runtime.ensure_ready())
+        try:
+            print("[lean-runtime] prewarming in parallel with stage1.\n", flush=True)
+            await asyncio.to_thread(self.run_stage1)
+            await prewarm_task
+            await self._run_stage2_stage3_with_runtime(
+                runtime,
+                run_stage2=run_stage2,
+                run_stage3=run_stage3,
+            )
+        except Exception:
+            if not prewarm_task.done():
+                prewarm_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await prewarm_task
+            raise
         finally:
             await runtime.aclose()
 
     def run(self) -> None:
         stages = set(str(stage) for stage in self.cfg.run.stages)
-        if "stage1" in stages:
-            self.run_stage1()
-        if "stage2" in stages or "stage3" in stages:
+        has_stage1 = "stage1" in stages
+        has_shared_lean_stages = "stage2" in stages or "stage3" in stages
+        if has_stage1 and has_shared_lean_stages:
             asyncio.run(
-                self._run_shared_lean_stages(
+                self._run_stage1_then_shared_lean_stages(
                     run_stage2="stage2" in stages,
                     run_stage3="stage3" in stages,
                 )
             )
+        else:
+            if has_stage1:
+                self.run_stage1()
+            if has_shared_lean_stages:
+                asyncio.run(
+                    self._run_shared_lean_stages(
+                        run_stage2="stage2" in stages,
+                        run_stage3="stage3" in stages,
+                    )
+                )
         if "stats" in stages:
             self.run_stats()
         if "cot" in stages:
