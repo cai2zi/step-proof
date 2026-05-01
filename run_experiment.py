@@ -592,7 +592,7 @@ class ExperimentRunner:
             self._run_command(f"viz_{bucket_label}", cmd)
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="experiment")
+@hydra.main(version_base=None, config_path="configs", config_name="experiment_fdg")
 def main(cfg: DictConfig) -> None:
     runner = ExperimentRunner(cfg)
     runner.prepare()

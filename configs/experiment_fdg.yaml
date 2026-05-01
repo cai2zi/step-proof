@@ -11,15 +11,15 @@ run:
   stream_logs_to_console: true
 
 stage1:
-  parquet_dir: /workspace/mnt/lxb_work/czx_work/data_raw/ODA-extra
+  parquet_dir: /root/autodl-tmp/data_raw/ODA-Math-460k/data_2
   parquet_glob: "*.parquet"
   id_column: id
   question_column: question
   response_column: response
   limit: 1000
-  model_path: /workspace/mnt/lxb_work/hf_dir/hf_model/Qwen/Qwen3-32B
-  tensor_parallel_size: 8
-  gpus: 0,1,2,3,4,5,6,7
+  model_path: /root/autodl-tmp/models/Qwen3-32B
+  tensor_parallel_size: 4
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   max_tokens: 8192
@@ -32,7 +32,7 @@ stage1:
   token_limit: 40960
   chat_template_kwargs:
     enable_thinking: true
-  batch_size: 512
+  batch_size: 100
   max_retries: 3
   graph_mode: fdg
   id_schema_mode: calc
@@ -42,20 +42,20 @@ stage1:
   include_think_in_dag: false
 
 stage2:
-  mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
+  mathlib_path: /root/autodl-tmp/mathlib4
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
   include_parent_statement: false
   include_parent_nl: false
-  gpus: 0,1,2,3,4,5,6,7
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  formalizer_model_path: /workspace/mnt/lxb_work/czx_work/models/Goedel-Formalizer-V2-8B
-  formalizer_tensor_parallel_size: 8
+  formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
+  formalizer_tensor_parallel_size: 4
   formalizer_max_tokens: 8192
   formalizer_token_limit: 40960
   formalizer_temperature: 0.0
@@ -71,18 +71,18 @@ stage2:
   limit: -1
 
 stage3:
-  mathlib_path: /workspace/mnt/lxb_work/czx_work/mathlib4
+  mathlib_path: /root/autodl-tmp/mathlib4
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
-  gpus: 0,1,2,3,4,5,6,7
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   id_schema_mode: calc
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  prover_model_path: /workspace/mnt/lxb_work/czx_work/models/Goedel-Prover-V2-8B
-  prover_tensor_parallel_size: 8
+  prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
+  prover_tensor_parallel_size: 4
   prover_max_tokens: 8192
   prover_token_limit: 40960
   prover_temperature: 0.0
