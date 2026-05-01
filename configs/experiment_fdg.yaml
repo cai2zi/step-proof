@@ -18,7 +18,7 @@ stage1:
   response_column: response
   limit: 1000
   model_path: /root/autodl-tmp/models/Qwen3-32B
-  tensor_parallel_size: 8
+  tensor_parallel_size: 4
   gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
@@ -58,7 +58,7 @@ stage2:
   batch_wait_ms: 200
   max_pending_validation_batches: 4
   formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
-  formalizer_tensor_parallel_size: 8
+  formalizer_tensor_parallel_size: 4
   formalizer_max_tokens: 8192
   formalizer_token_limit: 40960
   formalizer_temperature: 0.0
@@ -81,7 +81,7 @@ stage3:
   batch_wait_ms: 200
   max_pending_validation_batches: 4
   prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
-  prover_tensor_parallel_size: 8
+  prover_tensor_parallel_size: 4
   prover_max_tokens: 8192
   prover_token_limit: 40960
   prover_temperature: 0.0
