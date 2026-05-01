@@ -91,8 +91,8 @@ stage3:
   limit: -1
 
 stats:
-  top_n_per_bucket: 5
-  show_ids: false
+  top_n_per_bucket: 100
+  show_ids: true
 
 cot_trace:
   include_attempt_history: true
