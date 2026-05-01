@@ -984,6 +984,12 @@ class LeanServer:
             )
         return False, False, "Error: Invalid mode. This is an internal error."
 
+    async def ensure_ready(self) -> None:
+        """Eagerly initialize local persistent resources when supported."""
+        if self.mode == "local" and self.backend == "persistent_lsp":
+            assert self.persistent_pool is not None
+            await self.persistent_pool.ensure_started()
+
     async def aclose(self) -> None:
         if self.mode == "local" and self.persistent_pool is not None:
             await self.persistent_pool.aclose()

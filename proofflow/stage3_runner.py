@@ -79,7 +79,13 @@ PROVE_STAGE = StageSpec(
 
 
 class Stage3Runner:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        *,
+        lean_server: Optional[LeanServer] = None,
+        owned_lean_server: Optional[bool] = None,
+    ) -> None:
         self.args = args
         self.records: Dict[str, RecordState] = {}
         self.prove_queue: asyncio.PriorityQueue[Tuple[Tuple[int, int, int], str, str]] = (
@@ -92,7 +98,10 @@ class Stage3Runner:
         self.checkpoint_dir = args.checkpoint_dir
         self.done_ids: set[str] = set()
         self.prover: Optional[LLMWorkerClient] = None
-        self.lean_server: Optional[LeanServer] = None
+        self.lean_server: Optional[LeanServer] = lean_server
+        self.owned_lean_server = (
+            owned_lean_server if owned_lean_server is not None else lean_server is None
+        )
         self.validation_backpressure_limit = self._validation_backpressure_limit()
         self.validation_backpressure = asyncio.Semaphore(self.validation_backpressure_limit)
         self.validation_queue: asyncio.Queue[Tuple[StageSpec, StageTask, Optional[str]]] = (
@@ -216,17 +225,20 @@ class Stage3Runner:
                 chat_template_kwargs=chat_template_kwargs,
             )
         )
-        pool_size = (
-            self.args.lean_worker_pool_size
-            if self.args.lean_worker_pool_size > 0
-            else self.args.lean_check_concurrency
-        )
-        self.lean_server = LeanServer(
-            project_path=self.args.mathlib_path,
-            backend=self.args.lean_backend,
-            pool_size=pool_size,
-            temp_root=str(self.args.lean_temp_dir),
-        )
+        if self.lean_server is None:
+            pool_size = (
+                self.args.lean_worker_pool_size
+                if self.args.lean_worker_pool_size > 0
+                else self.args.lean_check_concurrency
+            )
+            self.lean_server = LeanServer(
+                project_path=self.args.mathlib_path,
+                backend=self.args.lean_backend,
+                pool_size=pool_size,
+                temp_root=str(self.args.lean_temp_dir),
+            )
+        else:
+            print("[init] stage3 using shared Lean runtime.")
         print("[init] stage3 runtime ready.\n")
 
     def _queue_for(
@@ -609,7 +621,7 @@ class Stage3Runner:
             raise
         finally:
             await self._cancel_validation_workers()
-            if self.lean_server is not None:
+            if self.owned_lean_server and self.lean_server is not None:
                 await self.lean_server.aclose()
             if self.prover is not None:
                 self.prover.close()

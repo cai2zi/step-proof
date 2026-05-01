@@ -46,6 +46,9 @@ stage2:
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
+  lean_temp_dir: lean_jobs_shared
+
+stage2:
   include_parent_statement: false
   include_parent_nl: false
   gpus: 0,1,2,3
