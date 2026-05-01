@@ -86,14 +86,14 @@ def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
 def build_fdg_form_messages(
     fact: FactState,
     *,
-    prompt_variant: str = "default",
+    prompt_name: str = "formalize_obligation",
 ) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
     problem_name = str(proof_obligation.get("problem_name") or f"prove_{fact['fact_id']}").strip()
     lemma_keyword = "theorem" if fact.get("is_final_answer") else "lemma"
     return build_chat_messages(
         "formalize_obligation",
-        prompt_variant=prompt_variant,
+        prompt_name=prompt_name,
         lemma_header=f"{lemma_keyword} {problem_name}",
         paper_theorem_name="test",
         informal_statement_content=str(proof_obligation.get("informal_statement_content", "")).strip(),
@@ -103,13 +103,13 @@ def build_fdg_form_messages(
 def build_fdg_prove_messages(
     fact: FactState,
     *,
-    prompt_variant: str = "default",
+    prompt_name: str = "prove",
 ) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
     lean_code = (fact.get("formalization") or {}).get("lean_code", "")
     messages = build_chat_messages(
         "prove",
-        prompt_variant=prompt_variant,
+        prompt_name=prompt_name,
         statement=str(proof_obligation.get("informal_statement_content", "")).strip(),
         lean_code=lean_code,
         **_split_lean_header_body(lean_code),

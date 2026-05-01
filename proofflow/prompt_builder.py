@@ -21,9 +21,20 @@ def _read(rel: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _stage_file(role: str, stage: PromptStage, variant: str) -> str:
-    suffix = "" if variant == "default" else f".{variant}"
-    return f"{role}/{stage}{suffix}.md"
+def _normalize_prompt_name(stage: PromptStage, prompt_name: str | None) -> str:
+    name = str(prompt_name or "").strip()
+    if not name:
+        raise ValueError(f"Prompt name is required for stage {stage!r}.")
+    if "/" in name or "\\" in name:
+        raise ValueError(f"Prompt name must be a file stem, got {name!r}.")
+    if name.endswith(".md"):
+        name = name[:-3]
+    return name
+
+
+def _prompt_file(role: str, stage: PromptStage, prompt_name: str | None) -> str:
+    name = _normalize_prompt_name(stage, prompt_name)
+    return f"{role}/{name}.md"
 
 
 def render_template(template: str, **kwargs: Any) -> str:
@@ -36,13 +47,13 @@ def render_template(template: str, **kwargs: Any) -> str:
 def build_chat_messages(
     stage: PromptStage,
     *,
-    prompt_variant: str = "default",
+    prompt_name: str | None = None,
     **kwargs: Any,
 ) -> List[Dict[str, str]]:
-    """Return chat messages for the given FDG prompt stage and variant."""
-    variant = (prompt_variant or "default").strip()
-    system = _read(_stage_file("system", stage, variant))
-    user = render_template(_read(_stage_file("user", stage, variant)), **kwargs)
+    """Return chat messages from prompts/{system,user}/{prompt_name}.md."""
+    name = _normalize_prompt_name(stage, prompt_name or stage)
+    system = _read(_prompt_file("system", stage, name))
+    user = render_template(_read(_prompt_file("user", stage, name)), **kwargs)
     messages: List[Dict[str, str]] = []
     if system.strip():
         messages.append({"role": "system", "content": system})

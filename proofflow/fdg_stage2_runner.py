@@ -130,7 +130,7 @@ class FDGStage2Runner:
         print(f"[resume] Total pending records to process: {loaded}\n")
 
     def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
-        prompt = str(getattr(self.args, "formalizer_prompt", "default") or "default")
+        prompt = str(getattr(self.args, "formalizer_prompt", "formalize_obligation") or "formalize_obligation")
         existing = str((record.get("meta") or {}).get("formalizer_prompt") or "")
         if existing and existing != prompt:
             rid = (record.get("meta") or {}).get("record_id", "<unknown>")
@@ -298,7 +298,7 @@ class FDGStage2Runner:
                 if not fact["form_messages"]:
                     fact["form_messages"] = build_fdg_form_messages(
                         fact,
-                        prompt_variant=self.args.formalizer_prompt,
+                        prompt_name=self.args.formalizer_prompt,
                     )
                 attempt_num = int(fact.get("form_retries_used", 0)) + 1
                 tasks.append(
@@ -559,9 +559,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--formalizer-prompt",
-        default="default",
-        choices=["default", "paper_goedel_v2"],
-        help="Formalizer prompt variant.",
+        default="formalize_obligation",
+        help="Formalizer prompt file stem under prompts/{system,user}.",
     )
     parser.add_argument("--formalizer-retries", type=int, default=3)
     parser.add_argument("--form-batch-size", type=int, default=64)

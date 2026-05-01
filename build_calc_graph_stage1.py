@@ -50,6 +50,7 @@ class PendingRecord:
     raw_cot: str
     source_file: str
     source_row_pos: int
+    fdg_prompt: str
     messages: List[Dict[str, str]]
     retry_count: int = 0
 
@@ -132,6 +133,7 @@ def _build_fdg_payload(
             "created_at": _utc_now_iso(),
             "graph_build_tries": tries,
             "include_think_in_dag": include_think_in_dag,
+            "fdg_prompt": record.fdg_prompt,
         },
         "input": {
             "problem": record.problem,
@@ -216,6 +218,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-retries", type=int, default=3)
     # FDG options
+    parser.add_argument(
+        "--fdg-prompt",
+        default="fdg",
+        help="FDG prompt file stem under prompts/{system,user}.",
+    )
     parser.add_argument(
         "--include-think-in-dag",
         action=argparse.BooleanOptionalAction,
@@ -303,6 +310,7 @@ def main() -> None:
                 problem_text=str(problem),
                 solution_or_cot=str(raw_cot),
                 include_think_in_dag=args.include_think_in_dag,
+                prompt_name=args.fdg_prompt,
             )
             new_count += 1
             return PendingRecord(
@@ -311,6 +319,7 @@ def main() -> None:
                 raw_cot=str(raw_cot),
                 source_file=_rel_source_file(args.parquet_dir, fp),
                 source_row_pos=pos,
+                fdg_prompt=args.fdg_prompt,
                 messages=msgs,
             )
 

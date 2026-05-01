@@ -376,12 +376,14 @@ def build_fdg_messages(
     problem_text: str,
     solution_or_cot: str,
     include_think_in_dag: bool = True,
+    prompt_name: str = "fdg",
 ) -> List[Dict[str, str]]:
     if not problem_text or not solution_or_cot:
         raise ValueError("FDG generation requires non-empty problem_text and solution_or_cot.")
     dag_solution = solution_or_cot if include_think_in_dag else strip_think_blocks(solution_or_cot)
     return build_chat_messages(
         "fdg",
+        prompt_name=prompt_name,
         problem_text=problem_text,
         solution_or_cot=dag_solution,
     )

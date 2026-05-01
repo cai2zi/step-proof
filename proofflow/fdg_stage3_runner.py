@@ -133,7 +133,7 @@ class FDGStage3Runner:
         print(f"[resume] Total pending records to process: {loaded}\n")
 
     def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
-        prompt = str(getattr(self.args, "prover_prompt", "default") or "default")
+        prompt = str(getattr(self.args, "prover_prompt", "prove") or "prove")
         existing = str((record.get("meta") or {}).get("prover_prompt") or "")
         if existing and existing != prompt:
             rid = (record.get("meta") or {}).get("record_id", "<unknown>")
@@ -302,7 +302,7 @@ class FDGStage3Runner:
                 if not fact.get("prove_messages"):
                     fact["prove_messages"] = build_fdg_prove_messages(
                         fact,
-                        prompt_variant=self.args.prover_prompt,
+                        prompt_name=self.args.prover_prompt,
                     )
                 attempt_num = int(fact.get("prove_retries_used", 0)) + 1
                 tasks.append(
@@ -565,9 +565,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prover-prompt",
-        default="default",
-        choices=["default", "paper_goedel_v2"],
-        help="Prover prompt variant.",
+        default="prove",
+        help="Prover prompt file stem under prompts/{system,user}.",
     )
     parser.add_argument("--prover-retries", type=int, default=3)
     parser.add_argument("--prove-batch-size", type=int, default=64)

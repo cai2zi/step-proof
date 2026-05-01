@@ -427,6 +427,8 @@ class ExperimentRunner:
             _cmd_value(cfg.batch_size),
             "--max-retries",
             _cmd_value(cfg.max_retries),
+            "--fdg-prompt",
+            _cmd_value(cfg.fdg_prompt),
             _bool_flag(bool(cfg.include_think_in_dag), "include-think-in-dag"),
         ]
         chat_kwargs = _json_arg(cfg.chat_template_kwargs)

@@ -34,6 +34,7 @@ stage1:
     enable_thinking: true
   batch_size: 512
   max_retries: 3
+  fdg_prompt: fdg_v1
   include_think_in_dag: false
 
 lean_runtime:
@@ -61,7 +62,7 @@ stage2:
   formalizer_top_k: 20
   formalizer_chat_template_kwargs:
     enable_thinking: true
-  formalizer_prompt: default
+  formalizer_prompt: formalize_obligation
   formalizer_retries: 3
   form_batch_size: 128
   limit: -1
@@ -84,7 +85,7 @@ stage3:
   prover_top_k: 20
   prover_chat_template_kwargs:
     enable_thinking: true
-  prover_prompt: default
+  prover_prompt: prove
   prover_retries: 3
   prove_batch_size: 128
   limit: -1
