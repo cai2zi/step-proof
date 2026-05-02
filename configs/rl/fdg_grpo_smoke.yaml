@@ -17,6 +17,7 @@ overrides:
   - data.max_response_length=4096
   - data.filter_overlong_prompts=True
   - data.truncation=error
+  - data.dataloader_num_workers=${oc.env:RL_DATALOADER_NUM_WORKERS,1}
   - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-32B}
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.model.use_remove_padding=True
@@ -33,13 +34,15 @@ overrides:
   - actor_rollout_ref.rollout.tensor_model_parallel_size=1
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.4
   - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.agent.num_workers=${oc.env:RL_AGENT_NUM_WORKERS,1}
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
-  - reward.reward_manager.name=batch
+  - reward.num_workers=${oc.env:RL_REWARD_NUM_WORKERS,1}
+  - reward.reward_manager.name=naive
   - reward.reward_manager.source=register
   - reward.custom_reward_function.path=${reward_fn_path}
   - reward.custom_reward_function.name=compute_score
-  - reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
+  - +reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
   - algorithm.use_kl_in_reward=False
   - trainer.critic_warmup=0
   - trainer.logger=["console"]

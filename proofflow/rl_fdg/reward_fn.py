@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import atexit
 import json
+import sys
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .evaluator import FDGRLEvaluator, load_evaluator_config
-from .reward_types import CandidateGraphInput
+# verl 通过文件路径动态加载本模块时 __package__ 为空，相对导入会失败；需保证可导入 proofflow.*
+_repo_root = Path(__file__).resolve().parents[2]
+_root_s = str(_repo_root)
+if _root_s not in sys.path:
+    sys.path.insert(0, _root_s)
+
+from proofflow.rl_fdg.evaluator import FDGRLEvaluator, load_evaluator_config
+from proofflow.rl_fdg.reward_types import CandidateGraphInput
 
 
 _RUNTIME: Optional[FDGRLEvaluator] = None
 _RUNTIME_KEY: Optional[str] = None
+_RUNTIME_LOCK = threading.RLock()
 
 
 def _runtime_key(config_path: str, extra_kwargs: Dict[str, Any]) -> str:
@@ -43,14 +53,32 @@ def _get_runtime(*, reward_config_path: str, **reward_kwargs: Any) -> FDGRLEvalu
 
 
 def compute_score(
-    data_sources: List[str],
-    solution_strs: List[str],
-    ground_truths: List[str],
-    extra_infos: List[Dict[str, Any]],
-    reward_config_path: str,
+    data_sources: Optional[List[str]] = None,
+    solution_strs: Optional[List[str]] = None,
+    ground_truths: Optional[List[str]] = None,
+    extra_infos: Optional[List[Dict[str, Any]]] = None,
+    reward_config_path: str = "",
+    data_source: Optional[str] = None,
+    solution_str: Optional[str] = None,
+    ground_truth: Optional[str] = None,
+    extra_info: Optional[Dict[str, Any]] = None,
     **reward_kwargs: Any,
-) -> List[Dict[str, Any]]:
-    runtime = _get_runtime(reward_config_path=reward_config_path, **reward_kwargs)
+) -> List[Dict[str, Any]] | Dict[str, Any]:
+    if not reward_config_path:
+        raise ValueError("reward_config_path is required")
+
+    single_item = data_sources is None
+    if single_item:
+        data_sources = [str(data_source or "")]
+        solution_strs = [str(solution_str or "")]
+        ground_truths = [str(ground_truth or "")]
+        extra_infos = [dict(extra_info or {})]
+
+    assert data_sources is not None
+    assert solution_strs is not None
+    assert ground_truths is not None
+    assert extra_infos is not None
+
     batch_inputs: List[CandidateGraphInput] = []
     for data_source, solution_str, ground_truth, extra_info in zip(
         data_sources,
@@ -69,4 +97,10 @@ def compute_score(
                 extra_info=dict(extra_info),
             )
         )
-    return [breakdown.to_reward_dict() for breakdown in runtime.evaluate_batch_sync(batch_inputs)]
+
+    # verl 的 naive reward manager 会在 ThreadPoolExecutor 中并发调用本函数。
+    # FDGRLEvaluator 复用一个 asyncio loop 和 vLLM/Lean runtime，不能被多个线程同时 run_until_complete。
+    with _RUNTIME_LOCK:
+        runtime = _get_runtime(reward_config_path=reward_config_path, **reward_kwargs)
+        rewards = [breakdown.to_reward_dict() for breakdown in runtime.evaluate_batch_sync(batch_inputs)]
+    return rewards[0] if single_item else rewards

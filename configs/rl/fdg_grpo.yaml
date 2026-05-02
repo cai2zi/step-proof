@@ -11,12 +11,13 @@ overrides:
   - algorithm.adv_estimator=grpo
   - data.train_files=['${train_file}']
   - data.val_files=['${val_file}']
-  - data.train_batch_size=32
-  - data.val_batch_size=32
+  - data.train_batch_size=24
+  - data.val_batch_size=24
   - data.max_prompt_length=8192
   - data.max_response_length=8192
   - data.filter_overlong_prompts=True
   - data.truncation=error
+  - data.dataloader_num_workers=${oc.env:RL_DATALOADER_NUM_WORKERS,2}
   - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-8B}
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.model.use_remove_padding=True
@@ -36,13 +37,17 @@ overrides:
   - actor_rollout_ref.rollout.tensor_model_parallel_size=${oc.env:RL_ROLLOUT_TP,2}
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.65
   - actor_rollout_ref.rollout.n=4
+  - actor_rollout_ref.rollout.agent.num_workers=${oc.env:RL_AGENT_NUM_WORKERS,2}
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
-  - reward.reward_manager.name=batch
+  - reward.num_workers=${oc.env:RL_REWARD_NUM_WORKERS,1}
+  # experimental reward loop 的内置 registry 当前注册 naive；batch 属于旧 reward manager registry
+  - reward.reward_manager.name=naive
   - reward.reward_manager.source=register
   - reward.custom_reward_function.path=${reward_fn_path}
   - reward.custom_reward_function.name=compute_score
-  - reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
+  # verl 默认 struct 里没有 reward_kwargs，必须用 + 追加新键
+  - +reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
   - algorithm.use_kl_in_reward=False
   - trainer.critic_warmup=0
   - trainer.logger=["console"]

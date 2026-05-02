@@ -77,7 +77,21 @@ def _worker_main(
                 )
                 continue
             try:
+                if os.getenv("STEP_PROOF_RL_TRACE", "1") != "0":
+                    print(
+                        f"[{config.name}] vLLM generate start "
+                        f"batch_size={len(request['message_batches'])} "
+                        f"gpus={config.gpus} tp={config.tensor_parallel_size} "
+                        f"max_tokens={config.max_tokens}",
+                        flush=True,
+                    )
                 outputs = manager.batch_generate(request["message_batches"])
+                if os.getenv("STEP_PROOF_RL_TRACE", "1") != "0":
+                    print(
+                        f"[{config.name}] vLLM generate done "
+                        f"batch_size={len(request['message_batches'])}",
+                        flush=True,
+                    )
                 response_queue.put({"type": "result", "outputs": outputs})
             except Exception:
                 response_queue.put(

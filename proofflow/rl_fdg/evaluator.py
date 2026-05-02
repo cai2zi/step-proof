@@ -31,13 +31,32 @@ from .reward_types import (
 )
 
 
+def _coerce_model_runtime_config(raw: Dict[str, Any]) -> ModelRuntimeConfig:
+    cfg = dict(raw)
+    for key in ("tensor_parallel_size", "max_tokens", "token_limit", "seed", "top_k", "retries", "batch_size"):
+        if key in cfg:
+            cfg[key] = int(cfg[key])
+    for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+        if key in cfg:
+            cfg[key] = float(cfg[key])
+    return ModelRuntimeConfig(**cfg)
+
+
+def _coerce_lean_runtime_config(raw: Dict[str, Any]) -> LeanRuntimeConfig:
+    cfg = dict(raw)
+    for key in ("check_concurrency", "worker_pool_size"):
+        if key in cfg:
+            cfg[key] = int(cfg[key])
+    return LeanRuntimeConfig(**cfg)
+
+
 def load_evaluator_config(config_path: str | Path) -> FDGRLEvaluatorConfig:
     cfg = OmegaConf.to_container(OmegaConf.load(str(config_path)), resolve=True)
     weights = RewardWeights(**dict(cfg.get("weights") or {}))
     runtime = dict(cfg.get("runtime") or {})
-    formalizer = ModelRuntimeConfig(**dict(runtime.get("formalizer") or {}))
-    prover = ModelRuntimeConfig(**dict(runtime.get("prover") or {}))
-    lean = LeanRuntimeConfig(**dict(runtime.get("lean") or {}))
+    formalizer = _coerce_model_runtime_config(dict(runtime.get("formalizer") or {}))
+    prover = _coerce_model_runtime_config(dict(runtime.get("prover") or {}))
+    lean = _coerce_lean_runtime_config(dict(runtime.get("lean") or {}))
     return FDGRLEvaluatorConfig(
         weights=weights,
         formalizer=formalizer,
