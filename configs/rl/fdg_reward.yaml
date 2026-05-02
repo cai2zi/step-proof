@@ -26,7 +26,7 @@ runtime:
     top_k: 20
     retries: 3
     batch_size: 64
-    prompt_name: formalize_obligation
+    prompt_name: formalize_obligation.paper_goedel_v2
     chat_template_kwargs:
       enable_thinking: true
   prover:
@@ -43,7 +43,7 @@ runtime:
     top_k: 20
     retries: 3
     batch_size: 64
-    prompt_name: prove
+    prompt_name: prove.paper_goedel_v2
     chat_template_kwargs:
       enable_thinking: true
   lean:

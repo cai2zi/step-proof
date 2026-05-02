@@ -17,7 +17,7 @@ overrides:
   - data.max_response_length=8192
   - data.filter_overlong_prompts=True
   - data.truncation=error
-  - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-32B}
+  - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-8B}
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.model.use_remove_padding=True
   - actor_rollout_ref.model.lora_rank=${oc.env:RL_LORA_RANK,64}
