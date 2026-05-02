@@ -1,0 +1,54 @@
+weights:
+  invalid_json_penalty: -1.0
+  invalid_fdg_penalty: -0.6
+  valid_json_bonus: 0.05
+  validator_pass_bonus: 0.15
+  formalizer_pass_weight: 0.4
+  prover_pass_weight: 0.2
+  final_answer_pass_weight: 0.2
+  warning_penalty: 0.01
+  extra_fact_penalty: 0.01
+  target_fact_count: 12
+
+runtime:
+  include_prover: true
+  formalizer:
+    model_path: ${oc.env:FORMALIZER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Formalizer-V2-8B}
+    gpus: ${oc.env:RL_FORMALIZER_GPUS,0,1,2,3}
+    tensor_parallel_size: ${oc.env:RL_FORMALIZER_TP,4}
+    max_tokens: 8192
+    token_limit: 40960
+    temperature: 0.0
+    top_p: 1.0
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    seed: 42
+    top_k: 20
+    retries: 3
+    batch_size: 64
+    prompt_name: formalize_obligation
+    chat_template_kwargs:
+      enable_thinking: true
+  prover:
+    model_path: ${oc.env:PROVER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Prover-V2-8B}
+    gpus: ${oc.env:RL_PROVER_GPUS,4,5,6,7}
+    tensor_parallel_size: ${oc.env:RL_PROVER_TP,4}
+    max_tokens: 8192
+    token_limit: 40960
+    temperature: 0.0
+    top_p: 1.0
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    seed: 42
+    top_k: 20
+    retries: 3
+    batch_size: 64
+    prompt_name: prove
+    chat_template_kwargs:
+      enable_thinking: true
+  lean:
+    mathlib_path: ${oc.env:MATHLIB_PROJECT_PATH,/root/autodl-tmp/mathlib4}
+    backend: ${oc.env:LEAN_BACKEND,persistent_lsp}
+    check_concurrency: 32
+    worker_pool_size: 0
+    temp_dir: ${oc.env:RL_LEAN_TEMP_DIR,results/rl/fdg_builder/lean_jobs}
