@@ -33,8 +33,8 @@ overrides:
   - actor_rollout_ref.actor.fsdp_config.param_offload=False
   - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
   - actor_rollout_ref.rollout.name=vllm
-  - actor_rollout_ref.rollout.tensor_model_parallel_size=${oc.env:RL_ROLLOUT_TP,4}
-  - actor_rollout_ref.rollout.gpu_memory_utilization=0.55
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=${oc.env:RL_ROLLOUT_TP,2}
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.65
   - actor_rollout_ref.rollout.n=4
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
@@ -48,7 +48,7 @@ overrides:
   - trainer.logger=["console"]
   - trainer.project_name=step_proof_fdg_grpo
   - trainer.experiment_name=fdg_builder_grpo
-  - trainer.n_gpus_per_node=${oc.env:RL_NUM_GPUS,8}
+  - trainer.n_gpus_per_node=${oc.env:RL_NUM_GPUS,6}
   - trainer.nnodes=1
   - trainer.save_freq=20
   - trainer.test_freq=10

@@ -14,8 +14,8 @@ runtime:
   include_prover: true
   formalizer:
     model_path: ${oc.env:FORMALIZER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Formalizer-V2-8B}
-    gpus: ${oc.env:RL_FORMALIZER_GPUS,0,1,2,3}
-    tensor_parallel_size: ${oc.env:RL_FORMALIZER_TP,4}
+    gpus: ${oc.env:RL_FORMALIZER_GPUS,6}
+    tensor_parallel_size: ${oc.env:RL_FORMALIZER_TP,1}
     max_tokens: 8192
     token_limit: 40960
     temperature: 0.0
@@ -31,8 +31,8 @@ runtime:
       enable_thinking: true
   prover:
     model_path: ${oc.env:PROVER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Prover-V2-8B}
-    gpus: ${oc.env:RL_PROVER_GPUS,4,5,6,7}
-    tensor_parallel_size: ${oc.env:RL_PROVER_TP,4}
+    gpus: ${oc.env:RL_PROVER_GPUS,7}
+    tensor_parallel_size: ${oc.env:RL_PROVER_TP,1}
     max_tokens: 8192
     token_limit: 40960
     temperature: 0.0
