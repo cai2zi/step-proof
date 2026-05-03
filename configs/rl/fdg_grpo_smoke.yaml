@@ -6,6 +6,9 @@ train_file: ${project_root}/data/rl/fdg_builder/train.parquet
 val_file: ${project_root}/data/rl/fdg_builder/val.parquet
 reward_config_path: ${project_root}/configs/rl/fdg_reward.yaml
 reward_fn_path: ${project_root}/proofflow/rl_fdg/reward_fn.py
+experiment_name: ${oc.env:RL_EXPERIMENT_NAME,fdg_builder_grpo_smoke}
+results_root: ${oc.env:RL_RESULTS_ROOT,${project_root}/results}
+experiment_root: ${results_root}/${experiment_name}
 
 overrides:
   - algorithm.adv_estimator=grpo
@@ -38,18 +41,23 @@ overrides:
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
   - reward.num_workers=${oc.env:RL_REWARD_NUM_WORKERS,1}
-  - reward.reward_manager.name=naive
+  - reward.reward_manager.name=batch
   - reward.reward_manager.source=register
   - reward.custom_reward_function.path=${reward_fn_path}
   - reward.custom_reward_function.name=compute_score
   - +reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
+  - +reward.custom_reward_function.reward_kwargs.use_runtime_actor=true
+  - +reward.custom_reward_function.reward_kwargs.runtime_actor_name=${oc.env:RL_FDG_RUNTIME_ACTOR_NAME,fdg_rl_runtime}
+  - +reward.custom_reward_function.reward_kwargs.runtime_actor_namespace=${oc.env:RL_FDG_RUNTIME_ACTOR_NAMESPACE,step_proof_rl}
   - algorithm.use_kl_in_reward=False
   - trainer.critic_warmup=0
   - trainer.logger=["console"]
   - trainer.project_name=step_proof_fdg_grpo_smoke
-  - trainer.experiment_name=fdg_builder_grpo_smoke
+  - trainer.experiment_name=${experiment_name}
+  - trainer.default_local_dir=${experiment_root}/checkpoints
   - trainer.n_gpus_per_node=${oc.env:RL_NUM_GPUS,1}
   - trainer.nnodes=1
   - trainer.save_freq=100
-  - trainer.test_freq=20
+  - trainer.val_before_train=${oc.env:RL_VAL_BEFORE_TRAIN,False}
+  - trainer.test_freq=${oc.env:RL_TEST_FREQ,-1}
   - trainer.total_epochs=1

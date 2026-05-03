@@ -37,6 +37,7 @@ class ModelRuntimeConfig:
     retries: int
     batch_size: int
     prompt_name: str
+    gpu_memory_utilization: float = 0.9
     chat_template_kwargs: JsonDict = field(default_factory=lambda: {"enable_thinking": False})
 
 
@@ -50,11 +51,21 @@ class LeanRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class SchedulerRuntimeConfig:
+    graph_wait_ms: int = 50
+    max_graph_batch_size: int = 64
+    formalizer_wait_ms: int = 25
+    prover_wait_ms: int = 100
+    max_pending_graphs: int = 4096
+
+
+@dataclass(frozen=True)
 class FDGRLEvaluatorConfig:
     weights: RewardWeights
     formalizer: ModelRuntimeConfig
     prover: ModelRuntimeConfig
     lean: LeanRuntimeConfig
+    scheduler: SchedulerRuntimeConfig = field(default_factory=SchedulerRuntimeConfig)
     include_prover: bool = True
 
 
@@ -73,6 +84,22 @@ class CandidateGraphInput:
 class BridgeFactTask:
     sample_index: int
     fact: JsonDict
+    attempt: int = 1
+    feedback_messages: List[JsonDict] = field(default_factory=list)
+    attempt_history: List[JsonDict] = field(default_factory=list)
+
+
+@dataclass
+class BridgeGenerationResult:
+    sample_index: int
+    fact_id: str
+    stage: str
+    attempts: int
+    extracted: bool
+    lean_code: str
+    error_message: str
+    raw_output: str = ""
+    attempt_history: List[JsonDict] = field(default_factory=list)
 
 
 @dataclass

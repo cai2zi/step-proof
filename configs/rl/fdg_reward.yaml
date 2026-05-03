@@ -12,10 +12,17 @@ weights:
 
 runtime:
   include_prover: true
+  scheduler:
+    graph_wait_ms: ${oc.env:RL_FDG_GRAPH_WAIT_MS,50}
+    max_graph_batch_size: ${oc.env:RL_FDG_MAX_GRAPH_BATCH_SIZE,64}
+    max_pending_graphs: ${oc.env:RL_FDG_MAX_PENDING_GRAPHS,4096}
+    formalizer_wait_ms: ${oc.env:RL_FDG_FORMALIZER_WAIT_MS,25}
+    prover_wait_ms: ${oc.env:RL_FDG_PROVER_WAIT_MS,100}
   formalizer:
     model_path: ${oc.env:FORMALIZER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Formalizer-V2-8B}
     gpus: ${oc.env:RL_FORMALIZER_GPUS,6}
     tensor_parallel_size: ${oc.env:RL_FORMALIZER_TP,1}
+    gpu_memory_utilization: ${oc.env:RL_FORMALIZER_GPU_MEMORY_UTILIZATION,0.9}
     max_tokens: 8192
     token_limit: 40960
     temperature: 0.0
@@ -33,6 +40,7 @@ runtime:
     model_path: ${oc.env:PROVER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Prover-V2-8B}
     gpus: ${oc.env:RL_PROVER_GPUS,7}
     tensor_parallel_size: ${oc.env:RL_PROVER_TP,1}
+    gpu_memory_utilization: ${oc.env:RL_PROVER_GPU_MEMORY_UTILIZATION,0.9}
     max_tokens: 8192
     token_limit: 40960
     temperature: 0.0

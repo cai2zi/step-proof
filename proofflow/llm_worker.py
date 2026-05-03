@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import multiprocessing as mp
 import os
 import queue
@@ -172,6 +173,13 @@ class LLMWorkerClient:
         raise RuntimeError(
             f"{self.config.name} worker generation failed:\n{response.get('error', response)}"
         )
+
+    async def generate_async(
+        self,
+        message_batches: List[List[Dict[str, str]]],
+        timeout: Optional[int] = None,
+    ) -> List[Optional[str]]:
+        return await asyncio.to_thread(self.generate, message_batches, timeout)
 
     def close(self, force: bool = False) -> None:
         if not hasattr(self, "_process") or self._process is None:

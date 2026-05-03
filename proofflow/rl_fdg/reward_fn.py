@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import sys
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -52,12 +54,56 @@ def _get_runtime(*, reward_config_path: str, **reward_kwargs: Any) -> FDGRLEvalu
     return _RUNTIME
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _compute_local(
+    batch_inputs: List[CandidateGraphInput],
+    *,
+    reward_config_path: str,
+    reward_kwargs: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    # FDGRLEvaluator 复用一个 asyncio loop 和 vLLM/Lean runtime，不能被多个线程同时 run_until_complete。
+    with _RUNTIME_LOCK:
+        runtime = _get_runtime(reward_config_path=reward_config_path, **reward_kwargs)
+        return [breakdown.to_reward_dict() for breakdown in runtime.evaluate_batch_sync(batch_inputs)]
+
+
+def _compute_with_actor(
+    batch_inputs: List[CandidateGraphInput],
+    *,
+    reward_config_path: str,
+    runtime_actor_name: str,
+    runtime_actor_namespace: str,
+) -> List[Dict[str, Any]]:
+    import ray
+
+    from proofflow.rl_fdg.runtime_actor import get_or_create_runtime_actor
+
+    actor = get_or_create_runtime_actor(
+        reward_config_path=reward_config_path,
+        runtime_actor_name=runtime_actor_name,
+        runtime_actor_namespace=runtime_actor_namespace,
+    )
+    return ray.get(actor.evaluate.remote([asdict(item) for item in batch_inputs]))
+
+
 def compute_score(
     data_sources: Optional[List[str]] = None,
     solution_strs: Optional[List[str]] = None,
     ground_truths: Optional[List[str]] = None,
     extra_infos: Optional[List[Dict[str, Any]]] = None,
     reward_config_path: str = "",
+    use_runtime_actor: bool | str = True,
+    runtime_actor_name: str = "fdg_rl_runtime",
+    runtime_actor_namespace: str = "step_proof_rl",
     data_source: Optional[str] = None,
     solution_str: Optional[str] = None,
     ground_truth: Optional[str] = None,
@@ -98,9 +144,28 @@ def compute_score(
             )
         )
 
-    # verl 的 naive reward manager 会在 ThreadPoolExecutor 中并发调用本函数。
-    # FDGRLEvaluator 复用一个 asyncio loop 和 vLLM/Lean runtime，不能被多个线程同时 run_until_complete。
-    with _RUNTIME_LOCK:
-        runtime = _get_runtime(reward_config_path=reward_config_path, **reward_kwargs)
-        rewards = [breakdown.to_reward_dict() for breakdown in runtime.evaluate_batch_sync(batch_inputs)]
+    local_reward_kwargs = dict(reward_kwargs)
+    rewards: List[Dict[str, Any]]
+    if _coerce_bool(use_runtime_actor, default=True):
+        try:
+            rewards = _compute_with_actor(
+                batch_inputs,
+                reward_config_path=reward_config_path,
+                runtime_actor_name=str(runtime_actor_name or "fdg_rl_runtime"),
+                runtime_actor_namespace=str(runtime_actor_namespace or "step_proof_rl"),
+            )
+        except Exception as exc:
+            if os.getenv("STEP_PROOF_RL_TRACE", "1") != "0":
+                print(f"[rl_fdg] shared runtime actor unavailable, falling back to local evaluator: {exc}", flush=True)
+            rewards = _compute_local(
+                batch_inputs,
+                reward_config_path=reward_config_path,
+                reward_kwargs=local_reward_kwargs,
+            )
+    else:
+        rewards = _compute_local(
+            batch_inputs,
+            reward_config_path=reward_config_path,
+            reward_kwargs=local_reward_kwargs,
+        )
     return rewards[0] if single_item else rewards

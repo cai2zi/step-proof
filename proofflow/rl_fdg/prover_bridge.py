@@ -8,7 +8,13 @@ from proofflow.lean_check import LeanServer
 from proofflow.llm_worker import LLMWorkerClient, LLMWorkerConfig
 from proofflow.runtime_common import extract_last_lean_block
 
-from .reward_types import BridgeFactResult, BridgeFactTask, LeanRuntimeConfig, ModelRuntimeConfig
+from .reward_types import (
+    BridgeFactResult,
+    BridgeFactTask,
+    BridgeGenerationResult,
+    LeanRuntimeConfig,
+    ModelRuntimeConfig,
+)
 
 
 class ProverBridge:
@@ -41,7 +47,7 @@ class ProverBridge:
                     temperature=self.config.temperature,
                     token_limit=self.config.token_limit,
                     dtype="float16",
-                    gpu_memory_utilization=0.9,
+                    gpu_memory_utilization=self.config.gpu_memory_utilization,
                     top_p=self.config.top_p,
                     presence_penalty=self.config.presence_penalty,
                     frequency_penalty=self.config.frequency_penalty,
@@ -76,154 +82,193 @@ class ProverBridge:
                 job_id=job_id,
             )
 
-    async def batch_prove(self, tasks: List[BridgeFactTask]) -> List[BridgeFactResult]:
+    @staticmethod
+    def _retry_feedback_message(result: BridgeFactResult) -> Dict[str, str]:
+        if result.error_message == "token_overflow":
+            content = "The previous response hit a token limit. Regenerate the complete Lean4 proof."
+        elif not result.lean_code:
+            content = (
+                f"The previous response was invalid because: {result.error_message}\n"
+                "Please regenerate valid Lean4 proof code."
+            )
+        else:
+            content = (
+                "The previous Lean4 proof did not verify.\n"
+                f"Lean feedback: {result.error_message}\n"
+                "Please regenerate a corrected proof."
+            )
+        return {"role": "user", "content": content}
+
+    @staticmethod
+    def _retry_task(task: BridgeFactTask, result: BridgeFactResult) -> BridgeFactTask:
+        return BridgeFactTask(
+            sample_index=task.sample_index,
+            fact=dict(task.fact),
+            attempt=result.attempts + 1,
+            feedback_messages=list(task.feedback_messages)
+            + [ProverBridge._retry_feedback_message(result)],
+            attempt_history=list(result.attempt_history),
+        )
+
+    async def batch_generate_proofs_once(
+        self,
+        tasks: List[BridgeFactTask],
+    ) -> List[BridgeGenerationResult]:
         if not tasks:
             return []
         await self.start()
         assert self.client is not None
 
-        pending: List[Dict[str, Any]] = []
+        batch: List[Dict[str, Any]] = []
         for task in tasks:
             fact = dict(task.fact)
-            pending.append(
+            batch.append(
                 {
                     "sample_index": task.sample_index,
                     "fact_id": str(fact["fact_id"]),
-                    "messages": build_fdg_prove_messages(fact, prompt_name=self.config.prompt_name),
-                    "history": [],
-                    "attempt": 1,
+                    "messages": build_fdg_prove_messages(fact, prompt_name=self.config.prompt_name)
+                    + list(task.feedback_messages),
+                    "history": list(task.attempt_history),
+                    "attempt": int(task.attempt),
                 }
             )
 
+        outputs = await self.client.generate_async([item["messages"] for item in batch])
+        results: List[BridgeGenerationResult] = []
+        for item, output in zip(batch, outputs):
+            attempt_num = int(item["attempt"])
+            history = list(item["history"])
+            if output is None:
+                error_msg = "token_overflow"
+                history.append({"attempt": attempt_num, "kind": "token_overflow", "error_msg": error_msg})
+                results.append(
+                    BridgeGenerationResult(
+                        sample_index=item["sample_index"],
+                        fact_id=item["fact_id"],
+                        stage="prover",
+                        attempts=attempt_num,
+                        extracted=False,
+                        lean_code="",
+                        error_message=error_msg,
+                        raw_output="",
+                        attempt_history=history,
+                    )
+                )
+                continue
+
+            try:
+                lean_code = extract_last_lean_block(output)
+            except Exception as exc:
+                error_msg = str(exc)
+                history.append({"attempt": attempt_num, "kind": "extract_error", "error_msg": error_msg})
+                results.append(
+                    BridgeGenerationResult(
+                        sample_index=item["sample_index"],
+                        fact_id=item["fact_id"],
+                        stage="prover",
+                        attempts=attempt_num,
+                        extracted=False,
+                        lean_code="",
+                        error_message=error_msg,
+                        raw_output=output,
+                        attempt_history=history,
+                    )
+                )
+                continue
+
+            results.append(
+                BridgeGenerationResult(
+                    sample_index=item["sample_index"],
+                    fact_id=item["fact_id"],
+                    stage="prover",
+                    attempts=attempt_num,
+                    extracted=True,
+                    lean_code=lean_code,
+                    error_message="",
+                    raw_output=output,
+                    attempt_history=history,
+                )
+            )
+        return results
+
+    async def batch_prove(self, tasks: List[BridgeFactTask]) -> List[BridgeFactResult]:
+        if not tasks:
+            return []
+
+        pending = list(tasks)
         finished: List[BridgeFactResult] = []
         while pending:
-            batch = pending[: self.config.batch_size]
+            chunk = pending[: self.config.batch_size]
             pending = pending[self.config.batch_size :]
-            outputs = self.client.generate([item["messages"] for item in batch])
-            for item, output in zip(batch, outputs):
-                attempt_num = int(item["attempt"])
-                history = list(item["history"])
-                if output is None:
-                    error_msg = "token_overflow"
-                    history.append({"attempt": attempt_num, "kind": "token_overflow", "error_msg": error_msg})
-                    if attempt_num < self.config.retries:
-                        item["history"] = history
-                        item["attempt"] = attempt_num + 1
-                        item["messages"] = list(item["messages"]) + [
-                            {
-                                "role": "user",
-                                "content": "The previous response hit a token limit. Regenerate the complete Lean4 proof.",
-                            }
-                        ]
-                        pending.append(item)
-                    else:
-                        finished.append(
-                            BridgeFactResult(
-                                sample_index=item["sample_index"],
-                                fact_id=item["fact_id"],
-                                stage="prover",
-                                attempts=attempt_num,
-                                success=False,
-                                verified=False,
-                                lean_code="",
-                                error_message=error_msg,
-                                raw_output="",
-                                attempt_history=history,
-                            )
-                        )
+            generations = await self.batch_generate_proofs_once(chunk)
+            chunk_results: List[BridgeFactResult | None] = [None] * len(chunk)
+            validation_jobs: List[tuple[int, BridgeGenerationResult]] = []
+            for index, generation in enumerate(generations):
+                if generation.extracted:
+                    validation_jobs.append((index, generation))
                     continue
-
-                try:
-                    lean_code = extract_last_lean_block(output)
-                except Exception as exc:
-                    error_msg = str(exc)
-                    history.append({"attempt": attempt_num, "kind": "extract_error", "error_msg": error_msg})
-                    if attempt_num < self.config.retries:
-                        item["history"] = history
-                        item["attempt"] = attempt_num + 1
-                        item["messages"] = list(item["messages"]) + [
-                            {
-                                "role": "user",
-                                "content": f"The previous response was invalid because: {error_msg}\nPlease regenerate valid Lean4 proof code.",
-                            }
-                        ]
-                        pending.append(item)
-                    else:
-                        finished.append(
-                            BridgeFactResult(
-                                sample_index=item["sample_index"],
-                                fact_id=item["fact_id"],
-                                stage="prover",
-                                attempts=attempt_num,
-                                success=False,
-                                verified=False,
-                                lean_code="",
-                                error_message=error_msg,
-                                raw_output=output,
-                                attempt_history=history,
-                            )
-                        )
-                    continue
-
-                lean_pass, lean_verify, error_msg = await self._validate_one(
-                    lean_code,
-                    job_id=f"rl_prove_{item['sample_index']}_{item['fact_id']}_{attempt_num}",
+                chunk_results[index] = BridgeFactResult(
+                    sample_index=generation.sample_index,
+                    fact_id=generation.fact_id,
+                    stage="prover",
+                    attempts=generation.attempts,
+                    success=False,
+                    verified=False,
+                    lean_code="",
+                    error_message=generation.error_message,
+                    raw_output=generation.raw_output,
+                    attempt_history=list(generation.attempt_history),
                 )
+
+            if not validation_jobs:
+                validation_results = []
+            else:
+                validation_results = await asyncio.gather(
+                    *(
+                        self._validate_one(
+                            generation.lean_code,
+                            job_id=(
+                                f"rl_prove_{generation.sample_index}_"
+                                f"{generation.fact_id}_{generation.attempts}"
+                            ),
+                        )
+                        for _index, generation in validation_jobs
+                    )
+                )
+
+            for (index, generation), (
+                lean_pass,
+                lean_verify,
+                error_msg,
+            ) in zip(validation_jobs, validation_results):
+                history = list(generation.attempt_history)
                 history.append(
                     {
-                        "attempt": attempt_num,
+                        "attempt": generation.attempts,
                         "kind": "lean_check",
                         "lean_pass": bool(lean_pass),
                         "lean_verify": bool(lean_verify),
                         "error_msg": error_msg,
                     }
                 )
-                if lean_verify:
-                    finished.append(
-                        BridgeFactResult(
-                            sample_index=item["sample_index"],
-                            fact_id=item["fact_id"],
-                            stage="prover",
-                            attempts=attempt_num,
-                            success=True,
-                            verified=True,
-                            lean_code=lean_code,
-                            error_message="",
-                            raw_output=output,
-                            attempt_history=history,
-                        )
-                    )
-                    continue
-
-                if attempt_num < self.config.retries:
-                    item["history"] = history
-                    item["attempt"] = attempt_num + 1
-                    item["messages"] = list(item["messages"]) + [
-                        {
-                            "role": "user",
-                            "content": (
-                                "The previous Lean4 proof did not verify.\n"
-                                f"Lean feedback: {error_msg}\n"
-                                "Please regenerate a corrected proof."
-                            ),
-                        }
-                    ]
-                    pending.append(item)
-                    continue
-
-                finished.append(
-                    BridgeFactResult(
-                        sample_index=item["sample_index"],
-                        fact_id=item["fact_id"],
-                        stage="prover",
-                        attempts=attempt_num,
-                        success=bool(lean_pass),
-                        verified=bool(lean_verify),
-                        lean_code=lean_code,
-                        error_message=str(error_msg),
-                        raw_output=output,
-                        attempt_history=history,
-                    )
+                chunk_results[index] = BridgeFactResult(
+                    sample_index=generation.sample_index,
+                    fact_id=generation.fact_id,
+                    stage="prover",
+                    attempts=generation.attempts,
+                    success=bool(lean_pass),
+                    verified=bool(lean_verify),
+                    lean_code=generation.lean_code,
+                    error_message="" if lean_verify else str(error_msg),
+                    raw_output=generation.raw_output,
+                    attempt_history=history,
                 )
+
+            for task, result in zip(chunk, chunk_results):
+                assert result is not None
+                if result.verified or result.attempts >= self.config.retries:
+                    finished.append(result)
+                    continue
+                pending.append(self._retry_task(task, result))
 
         return finished

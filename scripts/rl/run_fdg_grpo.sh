@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${RL_STOP_RAY_BEFORE_RUN:-1}" != "0" ]]; then
+  ray stop --force >/dev/null 2>&1 || true
+fi
+
+export STEP_PROOF_RL_SCHED_TRACE=1 
 CONFIG_PATH="${1:-configs/rl/fdg_grpo.yaml}"
 shift || true
-
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 python scripts/rl/run_fdg_grpo.py --config "$CONFIG_PATH" "$@"
