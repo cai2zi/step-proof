@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Dict, List, Optional
 
 from proofflow.fdg_stage_common import build_fdg_form_messages
@@ -15,6 +16,10 @@ from .reward_types import (
     LeanRuntimeConfig,
     ModelRuntimeConfig,
 )
+
+
+def _capture_conversation_enabled() -> bool:
+    return os.getenv("RL_FDG_COT_TRACE", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 class FormalizerBridge:
@@ -37,25 +42,24 @@ class FormalizerBridge:
 
     async def start(self) -> None:
         if self.client is None:
-            self.client = LLMWorkerClient(
-                config=LLMWorkerConfig(
-                    name="rl_formalizer",
-                    gpus=self.config.gpus,
-                    model_path=self.config.model_path,
-                    tensor_parallel_size=self.config.tensor_parallel_size,
-                    max_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature,
-                    token_limit=self.config.token_limit,
-                    dtype="float16",
-                    gpu_memory_utilization=self.config.gpu_memory_utilization,
-                    top_p=self.config.top_p,
-                    presence_penalty=self.config.presence_penalty,
-                    frequency_penalty=self.config.frequency_penalty,
-                    seed=self.config.seed,
-                    top_k=self.config.top_k,
-                    chat_template_kwargs=dict(self.config.chat_template_kwargs),
-                )
+            worker_config = LLMWorkerConfig(
+                name="rl_formalizer",
+                gpus=self.config.gpus,
+                model_path=self.config.model_path,
+                tensor_parallel_size=self.config.tensor_parallel_size,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                token_limit=self.config.token_limit,
+                dtype="float16",
+                gpu_memory_utilization=self.config.gpu_memory_utilization,
+                top_p=self.config.top_p,
+                presence_penalty=self.config.presence_penalty,
+                frequency_penalty=self.config.frequency_penalty,
+                seed=self.config.seed,
+                top_k=self.config.top_k,
+                chat_template_kwargs=dict(self.config.chat_template_kwargs),
             )
+            self.client = await asyncio.to_thread(LLMWorkerClient, config=worker_config)
         if self.lean_server is None:
             pool_size = self.lean_config.worker_pool_size or self.lean_config.check_concurrency
             self.lean_server = LeanServer(
@@ -138,6 +142,9 @@ class FormalizerBridge:
         for item, output in zip(batch, outputs):
             attempt_num = int(item["attempt"])
             history = list(item["history"])
+            conversation = None
+            if _capture_conversation_enabled():
+                conversation = list(item["messages"]) + [{"role": "assistant", "content": output or ""}]
             if output is None:
                 error_msg = "token_overflow"
                 history.append({"attempt": attempt_num, "kind": "token_overflow", "error_msg": error_msg})
@@ -152,6 +159,7 @@ class FormalizerBridge:
                         error_message=error_msg,
                         raw_output="",
                         attempt_history=history,
+                        conversation=conversation,
                     )
                 )
                 continue
@@ -172,6 +180,7 @@ class FormalizerBridge:
                         error_message=error_msg,
                         raw_output=output,
                         attempt_history=history,
+                        conversation=conversation,
                     )
                 )
                 continue
@@ -187,6 +196,7 @@ class FormalizerBridge:
                     error_message="",
                     raw_output=output,
                     attempt_history=history,
+                    conversation=conversation,
                 )
             )
         return results
@@ -218,6 +228,7 @@ class FormalizerBridge:
                     error_message=generation.error_message,
                     raw_output=generation.raw_output,
                     attempt_history=list(generation.attempt_history),
+                    conversation=generation.conversation,
                 )
 
             if not validation_jobs:
@@ -261,6 +272,7 @@ class FormalizerBridge:
                     error_message="" if lean_pass else str(error_msg),
                     raw_output=generation.raw_output,
                     attempt_history=history,
+                    conversation=generation.conversation,
                 )
 
             for task, result in zip(chunk, chunk_results):

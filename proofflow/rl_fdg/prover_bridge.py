@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Dict, List, Optional
 
 from proofflow.fdg_stage_common import build_fdg_prove_messages
@@ -17,6 +18,10 @@ from .reward_types import (
 )
 
 
+def _capture_conversation_enabled() -> bool:
+    return os.getenv("RL_FDG_COT_TRACE", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 class ProverBridge:
     def __init__(
         self,
@@ -29,18 +34,39 @@ class ProverBridge:
         self.config = config
         self.lean_config = lean_config
         self.client: Optional[LLMWorkerClient] = None
+        self.clients: List[LLMWorkerClient] = []
         self.lean_server: Optional[LeanServer] = lean_server
         self.owned_lean_server = (
             owned_lean_server if owned_lean_server is not None else lean_server is None
         )
         self.lean_semaphore = asyncio.Semaphore(max(1, lean_config.check_concurrency))
 
+    def _worker_gpu_groups(self) -> List[str]:
+        num_workers = max(1, int(getattr(self.config, "num_workers", 1) or 1))
+        tp = max(1, int(self.config.tensor_parallel_size))
+        if num_workers == 1:
+            return [self.config.gpus]
+
+        gpu_ids = [gpu.strip() for gpu in str(self.config.gpus).split(",") if gpu.strip()]
+        required = num_workers * tp
+        if len(gpu_ids) < required:
+            raise ValueError(
+                "Not enough prover GPUs for parallel workers: "
+                f"gpus={self.config.gpus!r}, tensor_parallel_size={tp}, "
+                f"num_workers={num_workers}, required_gpus={required}"
+            )
+        return [
+            ",".join(gpu_ids[index * tp : (index + 1) * tp])
+            for index in range(num_workers)
+        ]
+
     async def start(self) -> None:
-        if self.client is None:
-            self.client = LLMWorkerClient(
-                config=LLMWorkerConfig(
-                    name="rl_prover",
-                    gpus=self.config.gpus,
+        if not self.clients:
+            gpu_groups = self._worker_gpu_groups()
+            worker_configs = [
+                LLMWorkerConfig(
+                    name="rl_prover" if len(gpu_groups) == 1 else f"rl_prover_{index}",
+                    gpus=gpus,
                     model_path=self.config.model_path,
                     tensor_parallel_size=self.config.tensor_parallel_size,
                     max_tokens=self.config.max_tokens,
@@ -55,7 +81,46 @@ class ProverBridge:
                     top_k=self.config.top_k,
                     chat_template_kwargs=dict(self.config.chat_template_kwargs),
                 )
-            )
+                for index, gpus in enumerate(gpu_groups)
+            ]
+            clients: List[LLMWorkerClient] = []
+            startup_errors: List[str] = []
+            startup_stagger_s = float(os.getenv("RL_PROVER_WORKER_START_STAGGER_S", "3"))
+            for worker_config in worker_configs:
+                try:
+                    client = await asyncio.to_thread(LLMWorkerClient, config=worker_config)
+                except Exception as exc:
+                    startup_errors.append(
+                        f"{worker_config.name} gpus={worker_config.gpus}: {exc}"
+                    )
+                    print(
+                        f"[rl_prover] worker startup failed "
+                        f"name={worker_config.name} gpus={worker_config.gpus} error={exc}",
+                        flush=True,
+                    )
+                    continue
+                clients.append(client)
+                print(
+                    f"[rl_prover] worker startup ready "
+                    f"name={worker_config.name} gpus={worker_config.gpus}",
+                    flush=True,
+                )
+                if startup_stagger_s > 0 and len(clients) < len(worker_configs):
+                    await asyncio.sleep(startup_stagger_s)
+            if startup_errors:
+                if not clients:
+                    raise RuntimeError(
+                        "Failed to start any prover workers: " + "; ".join(startup_errors)
+                    )
+                print(
+                    "Failed to start some prover workers; continuing with "
+                    f"{len(clients)}/{len(worker_configs)} workers: "
+                    + "; ".join(startup_errors),
+                    flush=True,
+                )
+            self.clients.extend(clients)
+            if self.clients:
+                self.client = self.clients[0]
         if self.lean_server is None:
             pool_size = self.lean_config.worker_pool_size or self.lean_config.check_concurrency
             self.lean_server = LeanServer(
@@ -66,9 +131,10 @@ class ProverBridge:
             )
 
     async def aclose(self) -> None:
-        if self.client is not None:
-            self.client.close()
-            self.client = None
+        for client in self.clients:
+            client.close()
+        self.clients = []
+        self.client = None
         if self.owned_lean_server and self.lean_server is not None:
             await self.lean_server.aclose()
             self.lean_server = None
@@ -117,7 +183,7 @@ class ProverBridge:
         if not tasks:
             return []
         await self.start()
-        assert self.client is not None
+        assert self.clients
 
         batch: List[Dict[str, Any]] = []
         for task in tasks:
@@ -133,11 +199,45 @@ class ProverBridge:
                 }
             )
 
-        outputs = await self.client.generate_async([item["messages"] for item in batch])
+        outputs_by_index: List[Optional[str]] = [None] * len(batch)
+        if len(self.clients) == 1:
+            outputs = await self.clients[0].generate_async([item["messages"] for item in batch])
+            outputs_by_index = list(outputs)
+        else:
+            worker_items: List[List[tuple[int, Dict[str, Any]]]] = [
+                [] for _ in range(len(self.clients))
+            ]
+            for index, item in enumerate(batch):
+                worker_items[index % len(self.clients)].append((index, item))
+
+            async def _generate_on_worker(
+                client: LLMWorkerClient,
+                indexed_items: List[tuple[int, Dict[str, Any]]],
+            ) -> tuple[List[int], List[Optional[str]]]:
+                if not indexed_items:
+                    return [], []
+                indices = [index for index, _item in indexed_items]
+                message_batches = [item["messages"] for _index, item in indexed_items]
+                return indices, await client.generate_async(message_batches)
+
+            worker_outputs = await asyncio.gather(
+                *(
+                    _generate_on_worker(client, indexed_items)
+                    for client, indexed_items in zip(self.clients, worker_items)
+                    if indexed_items
+                )
+            )
+            for indices, outputs in worker_outputs:
+                for index, output in zip(indices, outputs):
+                    outputs_by_index[index] = output
+
         results: List[BridgeGenerationResult] = []
-        for item, output in zip(batch, outputs):
+        for item, output in zip(batch, outputs_by_index):
             attempt_num = int(item["attempt"])
             history = list(item["history"])
+            conversation = None
+            if _capture_conversation_enabled():
+                conversation = list(item["messages"]) + [{"role": "assistant", "content": output or ""}]
             if output is None:
                 error_msg = "token_overflow"
                 history.append({"attempt": attempt_num, "kind": "token_overflow", "error_msg": error_msg})
@@ -152,6 +252,7 @@ class ProverBridge:
                         error_message=error_msg,
                         raw_output="",
                         attempt_history=history,
+                        conversation=conversation,
                     )
                 )
                 continue
@@ -172,6 +273,7 @@ class ProverBridge:
                         error_message=error_msg,
                         raw_output=output,
                         attempt_history=history,
+                        conversation=conversation,
                     )
                 )
                 continue
@@ -187,6 +289,7 @@ class ProverBridge:
                     error_message="",
                     raw_output=output,
                     attempt_history=history,
+                    conversation=conversation,
                 )
             )
         return results
@@ -218,6 +321,7 @@ class ProverBridge:
                     error_message=generation.error_message,
                     raw_output=generation.raw_output,
                     attempt_history=list(generation.attempt_history),
+                    conversation=generation.conversation,
                 )
 
             if not validation_jobs:
@@ -262,6 +366,7 @@ class ProverBridge:
                     error_message="" if lean_verify else str(error_msg),
                     raw_output=generation.raw_output,
                     attempt_history=history,
+                    conversation=generation.conversation,
                 )
 
             for task, result in zip(chunk, chunk_results):

@@ -6,8 +6,8 @@ train_file: ${project_root}/data/rl/fdg_builder/train.parquet
 val_file: ${project_root}/data/rl/fdg_builder/val.parquet
 reward_config_path: ${project_root}/configs/rl/fdg_reward.yaml
 reward_fn_path: ${project_root}/proofflow/rl_fdg/reward_fn.py
-experiment_name: ${oc.env:RL_EXPERIMENT_NAME,fdg_builder_grpo}
-results_root: ${oc.env:RL_RESULTS_ROOT,${project_root}/results}
+experiment_name: fdg_builder_grpo
+results_root: ${project_root}/results
 experiment_root: ${results_root}/${experiment_name}
 
 overrides:
@@ -15,35 +15,35 @@ overrides:
   - data.train_files=['${train_file}']
   - data.val_files=['${val_file}']
   - data.train_batch_size=512
-  - data.val_batch_size=16
+  - data.val_batch_size=512
   - data.max_prompt_length=32768
   - data.max_response_length=8192
   - data.filter_overlong_prompts=True
   - data.truncation=error
-  - data.dataloader_num_workers=${oc.env:RL_DATALOADER_NUM_WORKERS,2}
-  - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-8B}
+  - data.dataloader_num_workers=2
+  - actor_rollout_ref.model.path=/root/autodl-tmp/models/Qwen3-8B
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.model.use_remove_padding=True
-  - actor_rollout_ref.model.lora_rank=${oc.env:RL_LORA_RANK,64}
-  - actor_rollout_ref.model.lora_alpha=${oc.env:RL_LORA_ALPHA,64}
+  - actor_rollout_ref.model.lora_rank=64
+  - actor_rollout_ref.model.lora_alpha=64
   - actor_rollout_ref.model.target_modules=all-linear
-  - actor_rollout_ref.actor.optim.lr=${oc.env:RL_LEARNING_RATE,1e-6}
+  - actor_rollout_ref.actor.optim.lr=1e-6
   - actor_rollout_ref.actor.ppo_mini_batch_size=16
-  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2
   - actor_rollout_ref.actor.use_kl_loss=True
-  - actor_rollout_ref.actor.kl_loss_coef=${oc.env:RL_KL_COEF,0.001}
+  - actor_rollout_ref.actor.kl_loss_coef=0.001
   - actor_rollout_ref.actor.kl_loss_type=low_var_kl
   - actor_rollout_ref.actor.entropy_coeff=0.0
-  - actor_rollout_ref.actor.fsdp_config.param_offload=False
-  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.actor.fsdp_config.param_offload=True
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
   - actor_rollout_ref.rollout.name=vllm
-  - actor_rollout_ref.rollout.tensor_model_parallel_size=${oc.env:RL_ROLLOUT_TP,1}
-  - actor_rollout_ref.rollout.gpu_memory_utilization=0.65
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.45
   - actor_rollout_ref.rollout.n=4
-  - actor_rollout_ref.rollout.agent.num_workers=${oc.env:RL_AGENT_NUM_WORKERS,4}
-  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
-  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
-  - reward.num_workers=${oc.env:RL_REWARD_NUM_WORKERS,1}
+  - actor_rollout_ref.rollout.agent.num_workers=4
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16
+  - reward.num_workers=16
   - reward.reward_manager.name=batch
   - reward.reward_manager.source=register
   - reward.custom_reward_function.path=${reward_fn_path}
@@ -52,20 +52,20 @@ overrides:
   - +reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
   - +reward.custom_reward_function.reward_kwargs.use_runtime_actor=true
   - +reward.custom_reward_function.reward_kwargs.runtime_actor_fallback_to_local=false
-  - +reward.custom_reward_function.reward_kwargs.runtime_actor_name=${oc.env:RL_FDG_RUNTIME_ACTOR_NAME,fdg_rl_runtime}
-  - +reward.custom_reward_function.reward_kwargs.runtime_actor_namespace=${oc.env:RL_FDG_RUNTIME_ACTOR_NAMESPACE,step_proof_rl}
-  - +reward.custom_reward_function.reward_kwargs.include_reward_trace=${oc.env:RL_FDG_LOG_SAMPLES_PER_STEP,0}
+  - +reward.custom_reward_function.reward_kwargs.runtime_actor_name=fdg_rl_runtime_fdg_builder_grpo
+  - +reward.custom_reward_function.reward_kwargs.runtime_actor_namespace=step_proof_rl
+  - +reward.custom_reward_function.reward_kwargs.include_reward_trace=${oc.env:RL_FDG_LOG_SAMPLES_PER_STEP,-1}
   - algorithm.use_kl_in_reward=False
   - trainer.critic_warmup=0
   - trainer.logger=["console"]
   - trainer.project_name=step_proof_fdg_grpo
   - trainer.experiment_name=${experiment_name}
   - trainer.default_local_dir=${experiment_root}/checkpoints
-  - +trainer.fdg_reward_log_samples_per_step=${oc.env:RL_FDG_LOG_SAMPLES_PER_STEP,5}
+  - +trainer.fdg_reward_log_samples_per_step=${oc.env:RL_FDG_LOG_SAMPLES_PER_STEP,-1}
   - +trainer.fdg_reward_sample_log_path=${experiment_root}/reward_samples/train_reward_samples.jsonl
-  - trainer.n_gpus_per_node=${oc.env:RL_NUM_GPUS,6}
+  - trainer.n_gpus_per_node=4
   - trainer.nnodes=1
-  - trainer.save_freq=20
-  - trainer.val_before_train=${oc.env:RL_VAL_BEFORE_TRAIN,False}
-  - trainer.test_freq=${oc.env:RL_TEST_FREQ,-1}
+  - trainer.save_freq=2
+  - trainer.val_before_train=1
+  - trainer.test_freq=10
   - trainer.total_epochs=1

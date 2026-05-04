@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 
 from proofflow.rl_fdg import reward_fn
@@ -11,6 +12,7 @@ from proofflow.rl_fdg.reward_types import (
     FactRewardTrace,
     GraphRewardBreakdown,
     SchedulerRuntimeConfig,
+    TraceRuntimeConfig,
 )
 
 
@@ -24,6 +26,7 @@ def _fake_config(
     prover_wait_ms: int = 25,
     formalizer_fail_extract_once: bool = False,
     prover_fail_verify_once: bool = False,
+    trace_enabled: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         scheduler=SchedulerRuntimeConfig(
@@ -37,6 +40,7 @@ def _fake_config(
         formalizer=SimpleNamespace(batch_size=8, retries=formalizer_retries),
         prover=SimpleNamespace(batch_size=8, retries=prover_retries),
         lean=SimpleNamespace(check_concurrency=1, temp_dir="dummy"),
+        trace=TraceRuntimeConfig(enabled=trace_enabled, out_dir="dummy"),
         formalizer_fail_extract_once=formalizer_fail_extract_once,
         prover_fail_verify_once=prover_fail_verify_once,
     )
@@ -353,6 +357,15 @@ def test_runtime_actor_invalid_graph_skips_formalizer(monkeypatch) -> None:
     assert evaluator.formalizer_bridge.calls == []
 
 
+def test_runtime_actor_enables_conversation_capture_from_trace_config(monkeypatch) -> None:
+    monkeypatch.delenv("RL_FDG_COT_TRACE", raising=False)
+    _install_fake_runtime(monkeypatch, _fake_config(include_prover=True, trace_enabled=True))
+
+    runtime_actor.FDGRLRuntimeActor("dummy_reward_config.yaml")
+
+    assert os.environ["RL_FDG_COT_TRACE"] == "1"
+
+
 def test_compute_score_falls_back_when_actor_unavailable(monkeypatch) -> None:
     calls = []
 
@@ -374,6 +387,7 @@ def test_compute_score_falls_back_when_actor_unavailable(monkeypatch) -> None:
         extra_infos=[{"record_id": "fallback_case"}],
         reward_config_path="dummy_reward_config.yaml",
         use_runtime_actor=True,
+        runtime_actor_fallback_to_local=True,
     )
 
     assert result == [{"score": 0.5, "record_id": "fallback_case"}]

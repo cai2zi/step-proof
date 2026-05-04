@@ -33,6 +33,7 @@ from .reward_types import (
     ModelRuntimeConfig,
     RewardWeights,
     SchedulerRuntimeConfig,
+    TraceRuntimeConfig,
 )
 
 
@@ -47,7 +48,16 @@ def _scheduler_trace(message: str) -> None:
 
 def _coerce_model_runtime_config(raw: Dict[str, Any]) -> ModelRuntimeConfig:
     cfg = dict(raw)
-    for key in ("tensor_parallel_size", "max_tokens", "token_limit", "seed", "top_k", "retries", "batch_size"):
+    for key in (
+        "tensor_parallel_size",
+        "max_tokens",
+        "token_limit",
+        "seed",
+        "top_k",
+        "retries",
+        "batch_size",
+        "num_workers",
+    ):
         if key in cfg:
             cfg[key] = int(cfg[key])
     for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "gpu_memory_utilization"):
@@ -72,10 +82,34 @@ def _coerce_scheduler_runtime_config(raw: Dict[str, Any]) -> SchedulerRuntimeCon
         "formalizer_wait_ms",
         "prover_wait_ms",
         "max_pending_graphs",
+        "runtime_actor_max_concurrency",
     ):
         if key in cfg:
             cfg[key] = int(cfg[key])
     return SchedulerRuntimeConfig(**cfg)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "no", "n", "off", ""}:
+            return False
+        try:
+            return float(normalized) > 0
+        except ValueError:
+            return False
+    return bool(value)
+
+
+def _coerce_trace_runtime_config(raw: Dict[str, Any]) -> TraceRuntimeConfig:
+    cfg = dict(raw)
+    if "enabled" in cfg:
+        cfg["enabled"] = _coerce_bool(cfg["enabled"])
+    return TraceRuntimeConfig(**cfg)
 
 
 def load_evaluator_config(config_path: str | Path) -> FDGRLEvaluatorConfig:
@@ -86,13 +120,15 @@ def load_evaluator_config(config_path: str | Path) -> FDGRLEvaluatorConfig:
     prover = _coerce_model_runtime_config(dict(runtime.get("prover") or {}))
     lean = _coerce_lean_runtime_config(dict(runtime.get("lean") or {}))
     scheduler = _coerce_scheduler_runtime_config(dict(runtime.get("scheduler") or {}))
+    trace = _coerce_trace_runtime_config(dict(runtime.get("trace") or {}))
     return FDGRLEvaluatorConfig(
         weights=weights,
         formalizer=formalizer,
         prover=prover,
         lean=lean,
         scheduler=scheduler,
-        include_prover=bool(runtime.get("include_prover", True)),
+        trace=trace,
+        include_prover=_coerce_bool(runtime.get("include_prover", True)),
     )
 
 
@@ -220,6 +256,7 @@ class FDGRLEvaluator:
                     validator_passed=False,
                     warning_count=0,
                     num_facts=0,
+                    errors=errors,
                     weights=self.config.weights,
                 )
                 prepared_items.append(
@@ -257,6 +294,7 @@ class FDGRLEvaluator:
                 validator_passed=parsed.validator_passed,
                 warning_count=len(warnings),
                 num_facts=num_facts,
+                errors=errors,
                 weights=self.config.weights,
             )
             if not parsed.validator_passed or parsed.document is None:

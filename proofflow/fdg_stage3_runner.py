@@ -326,6 +326,8 @@ class FDGStage3Runner:
             fact = record["facts"][task["fact_id"]]
             attempt_num = task["attempt_num"]
             history = list(fact.get("prove_attempt_history") or [])
+            conversation = copy.deepcopy(task["messages"])
+            conversation.append({"role": "assistant", "content": output or ""})
             if result["kind"] == "validated":
                 payload = {
                     "lean_code": result["lean_code"],
@@ -334,6 +336,7 @@ class FDGStage3Runner:
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
                     "attempt_history": history,
+                    "conversation": conversation,
                 }
                 success = bool(result["lean_verify"])
                 retry_error = f"Lean error/warnings: {result['error_msg']}"
@@ -345,6 +348,7 @@ class FDGStage3Runner:
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
                     "attempt_history": history,
+                    "conversation": conversation,
                 }
                 success = False
                 retry_error = f"Error: {result['error_msg']}"

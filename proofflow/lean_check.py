@@ -643,7 +643,7 @@ class LocalLeanLspWorker:
         except Exception as exc:
             self._fail_pending(exc)
         finally:
-            self._fail_pending(RuntimeError("Lean LSP worker exited unexpectedly."))
+            self._fail_pending(self._worker_exit_error())
 
     async def _stderr_loop(self) -> None:
         if self.proc is None or self.proc.stderr is None:
@@ -741,6 +741,14 @@ class LocalLeanLspWorker:
         if self._job_future is not None and not self._job_future.done():
             self._job_future.set_exception(exc)
 
+    def _worker_exit_error(self) -> RuntimeError:
+        parts = ["Lean LSP worker exited unexpectedly."]
+        if self.proc is not None and self.proc.returncode is not None:
+            parts.append(f"returncode={self.proc.returncode}")
+        if self._stderr_lines:
+            parts.append("stderr_tail=" + " | ".join(self._stderr_lines[-5:]))
+        return RuntimeError(" ".join(parts))
+
 
 class LocalLeanLspPool:
     def __init__(
@@ -764,15 +772,36 @@ class LocalLeanLspPool:
         async with self.start_lock:
             if self.started:
                 return
+            failed_starts: List[str] = []
             for worker_id in range(self.pool_size):
                 worker = LocalLeanLspWorker(
                     project_path=self.project_path,
                     temp_root=self.temp_root,
                     worker_id=worker_id,
                 )
-                await worker.start()
+                try:
+                    await worker.start()
+                except Exception as exc:
+                    failed_starts.append(f"worker_id={worker_id} error={exc}")
+                    await worker.aclose()
+                    print(
+                        f"[lean_lsp_pool] worker start failed worker_id={worker_id} error={exc}",
+                        flush=True,
+                    )
+                    continue
                 self.workers.append(worker)
                 await self.available_workers.put(worker)
+            if not self.workers:
+                raise RuntimeError(
+                    "Failed to start any Lean LSP workers. "
+                    + " ".join(failed_starts[-3:])
+                )
+            if failed_starts:
+                print(
+                    f"[lean_lsp_pool] started={len(self.workers)} "
+                    f"failed={len(failed_starts)} requested={self.pool_size}",
+                    flush=True,
+                )
             self.started = True
 
     async def check(
@@ -793,17 +822,34 @@ class LocalLeanLspPool:
             )
         except asyncio.TimeoutError:
             worker_replaced = True
-            replacement = await self._replace_worker(worker)
-            await self.available_workers.put(replacement)
-            return False, False, f"Verification timed out after {timeout} seconds."
+            replacement, replace_error = await self._try_replace_worker(worker)
+            if replacement is not None:
+                await self.available_workers.put(replacement)
+            message = f"Verification timed out after {timeout} seconds."
+            if replace_error is not None:
+                message += f" Replacement failed: {replace_error}"
+            return False, False, message
         except Exception as exc:
             worker_replaced = True
-            replacement = await self._replace_worker(worker)
-            await self.available_workers.put(replacement)
-            return False, False, f"Verification failed with exception: {exc}"
+            replacement, replace_error = await self._try_replace_worker(worker)
+            if replacement is not None:
+                await self.available_workers.put(replacement)
+            message = f"Verification failed with exception: {exc}"
+            if replace_error is not None:
+                message += f" Replacement failed: {replace_error}"
+            return False, False, message
         finally:
             if not worker_replaced:
                 await self.available_workers.put(worker)
+
+    async def _try_replace_worker(
+        self,
+        worker: LocalLeanLspWorker,
+    ) -> tuple[Optional[LocalLeanLspWorker], Optional[Exception]]:
+        try:
+            return await self._replace_worker(worker), None
+        except Exception as exc:
+            return None, exc
 
     async def _replace_worker(self, worker: LocalLeanLspWorker) -> LocalLeanLspWorker:
         await worker.aclose()

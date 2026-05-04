@@ -73,6 +73,7 @@ def _formal_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: st
                     "dependency_context_block": formalization.get(
                         "dependency_context_block", ""
                     ),
+                    "conversation": formalization.get("conversation", []),
                 }
             )
             if include_history:
@@ -93,6 +94,7 @@ def _prove_rows(rows: Iterable[JsonDict], include_history: bool, graph_mode: str
                     "lean_verify": solved.get("lean_verify", False),
                     "lean_code": solved.get("lean_code", ""),
                     "error_msg": solved.get("error_msg"),
+                    "conversation": solved.get("conversation", []),
                 }
             )
             if include_history:

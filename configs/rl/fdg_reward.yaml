@@ -7,56 +7,60 @@ weights:
   prover_pass_weight: 0.2
   final_answer_pass_weight: 0.2
   warning_penalty: 0.01
-  extra_fact_penalty: 0.01
-  target_fact_count: 12
 
 runtime:
   include_prover: true
   scheduler:
-    graph_wait_ms: ${oc.env:RL_FDG_GRAPH_WAIT_MS,50}
-    max_graph_batch_size: ${oc.env:RL_FDG_MAX_GRAPH_BATCH_SIZE,64}
-    max_pending_graphs: ${oc.env:RL_FDG_MAX_PENDING_GRAPHS,4096}
-    formalizer_wait_ms: ${oc.env:RL_FDG_FORMALIZER_WAIT_MS,25}
-    prover_wait_ms: ${oc.env:RL_FDG_PROVER_WAIT_MS,100}
+    graph_wait_ms: 200
+    max_graph_batch_size: 2048
+    max_pending_graphs: 8192
+    runtime_actor_max_concurrency: 256
+    formalizer_wait_ms: 500
+    prover_wait_ms: 200
   formalizer:
-    model_path: ${oc.env:FORMALIZER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Formalizer-V2-8B}
-    gpus: ${oc.env:RL_FORMALIZER_GPUS,6}
-    tensor_parallel_size: ${oc.env:RL_FORMALIZER_TP,1}
-    gpu_memory_utilization: ${oc.env:RL_FORMALIZER_GPU_MEMORY_UTILIZATION,0.9}
+    model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
+    gpus: "3"
+    tensor_parallel_size: 1
+    num_workers: 1
+    gpu_memory_utilization: 0.95
     max_tokens: 8192
-    token_limit: 40960
+    token_limit: 32768
     temperature: 0.0
     top_p: 1.0
     presence_penalty: 0.0
     frequency_penalty: 0.0
     seed: 42
     top_k: 20
-    retries: 3
-    batch_size: 64
+    retries: 1
+    batch_size: 2048
     prompt_name: formalize_obligation.paper_goedel_v2
     chat_template_kwargs:
       enable_thinking: true
   prover:
-    model_path: ${oc.env:PROVER_MODEL_PATH,/root/autodl-tmp/models/Goedel-Prover-V2-8B}
-    gpus: ${oc.env:RL_PROVER_GPUS,7}
-    tensor_parallel_size: ${oc.env:RL_PROVER_TP,1}
-    gpu_memory_utilization: ${oc.env:RL_PROVER_GPU_MEMORY_UTILIZATION,0.9}
-    max_tokens: 8192
-    token_limit: 40960
+    model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
+    gpus: "0,1,2"
+    tensor_parallel_size: 1
+    num_workers: 3
+    gpu_memory_utilization: 0.95
+    max_tokens: 4096
+    token_limit: 8192
     temperature: 0.0
     top_p: 1.0
     presence_penalty: 0.0
     frequency_penalty: 0.0
     seed: 42
     top_k: 20
-    retries: 3
-    batch_size: 64
+    retries: 1
+    batch_size: 2048
     prompt_name: prove.paper_goedel_v2
     chat_template_kwargs:
       enable_thinking: true
   lean:
-    mathlib_path: ${oc.env:MATHLIB_PROJECT_PATH,/root/autodl-tmp/mathlib4}
-    backend: ${oc.env:LEAN_BACKEND,persistent_lsp}
-    check_concurrency: 32
+    mathlib_path: /root/autodl-tmp/mathlib4
+    backend: persistent_lsp
+    check_concurrency: 128
     worker_pool_size: 0
-    temp_dir: ${oc.env:RL_LEAN_TEMP_DIR,results/rl/fdg_builder/lean_jobs}
+    temp_dir: /root/autodl-tmp/step-proof/results/fdg_builder_grpo/tmp/lean_jobs
+  trace:
+    enabled: true
+    out_dir: /root/autodl-tmp/step-proof/results/fdg_builder_grpo/cot_traces

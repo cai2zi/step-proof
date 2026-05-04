@@ -143,7 +143,7 @@ def main() -> None:
         overrides.append(f"hydra.run.dir={hydra_run_dir}")
 
     command = [python_bin, "-m", verl_entry] + overrides
-    print("Launching:", " ".join(command))
+    print("Launching:", " ".join(command), flush=True)
     subprocess.run(command, cwd=project_root, env=env, check=True)
 
 

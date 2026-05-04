@@ -17,8 +17,6 @@ class RewardWeights:
     prover_pass_weight: float = 0.2
     final_answer_pass_weight: float = 0.2
     warning_penalty: float = 0.01
-    extra_fact_penalty: float = 0.01
-    target_fact_count: int = 12
 
 
 @dataclass(frozen=True)
@@ -37,6 +35,7 @@ class ModelRuntimeConfig:
     retries: int
     batch_size: int
     prompt_name: str
+    num_workers: int = 1
     gpu_memory_utilization: float = 0.9
     chat_template_kwargs: JsonDict = field(default_factory=lambda: {"enable_thinking": False})
 
@@ -57,6 +56,13 @@ class SchedulerRuntimeConfig:
     formalizer_wait_ms: int = 25
     prover_wait_ms: int = 100
     max_pending_graphs: int = 4096
+    runtime_actor_max_concurrency: int = 128
+
+
+@dataclass(frozen=True)
+class TraceRuntimeConfig:
+    enabled: bool = False
+    out_dir: str = "results/fdg_builder_grpo/cot_traces"
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,7 @@ class FDGRLEvaluatorConfig:
     prover: ModelRuntimeConfig
     lean: LeanRuntimeConfig
     scheduler: SchedulerRuntimeConfig = field(default_factory=SchedulerRuntimeConfig)
+    trace: TraceRuntimeConfig = field(default_factory=TraceRuntimeConfig)
     include_prover: bool = True
 
 
@@ -100,6 +107,7 @@ class BridgeGenerationResult:
     error_message: str
     raw_output: str = ""
     attempt_history: List[JsonDict] = field(default_factory=list)
+    conversation: Optional[List[JsonDict]] = None
 
 
 @dataclass
@@ -114,6 +122,7 @@ class BridgeFactResult:
     error_message: str
     raw_output: str = ""
     attempt_history: List[JsonDict] = field(default_factory=list)
+    conversation: Optional[List[JsonDict]] = None
 
     def to_dict(self) -> JsonDict:
         return asdict(self)
@@ -186,8 +195,8 @@ class GraphRewardBreakdown:
             "parse_error": self.parse_error,
         }
 
-    def to_reward_dict(self) -> JsonDict:
-        return {
+    def to_reward_dict(self, *, include_trace: bool = False) -> JsonDict:
+        payload = {
             "score": self.score,
             "validator_passed": self.validator_passed,
             "valid_json": self.valid_json,
@@ -204,3 +213,6 @@ class GraphRewardBreakdown:
             "num_warnings": self.num_warnings,
             "parse_error": self.parse_error,
         }
+        if include_trace:
+            payload["fdg_reward_trace"] = self.to_dict()
+        return payload

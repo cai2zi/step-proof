@@ -12,8 +12,24 @@ def normalized_rate(numerator: int, denominator: int) -> float:
 
 
 def score_length_penalty(num_facts: int, *, weights: RewardWeights) -> float:
-    overflow = max(0, num_facts - max(1, weights.target_fact_count))
-    return overflow * weights.extra_fact_penalty
+    return 0.0
+
+
+def invalid_fdg_penalty_scale(*, errors: Iterable[dict], num_facts: int) -> float:
+    """Scale graph validation penalty by the fraction of facts with validation errors."""
+    if num_facts <= 0:
+        return 1.0
+
+    invalid_fact_ids = {
+        str(error.get("fact_id", "")).strip()
+        for error in errors
+        if str(error.get("fact_id", "")).strip()
+    }
+    if invalid_fact_ids:
+        return min(1.0, len(invalid_fact_ids) / float(num_facts))
+
+    has_global_error = any(True for _ in errors)
+    return 1.0 if has_global_error else 0.0
 
 
 def score_structure(
@@ -22,12 +38,14 @@ def score_structure(
     validator_passed: bool,
     warning_count: int,
     num_facts: int,
+    errors: Iterable[dict] = (),
     weights: RewardWeights,
 ) -> tuple[float, float]:
     if not valid_json:
         return weights.invalid_json_penalty, 0.0
     if not validator_passed:
-        return weights.valid_json_bonus + weights.invalid_fdg_penalty, 0.0
+        penalty_scale = invalid_fdg_penalty_scale(errors=errors, num_facts=num_facts)
+        return weights.valid_json_bonus + weights.invalid_fdg_penalty * penalty_scale, 0.0
 
     warning_penalty = warning_count * weights.warning_penalty
     length_penalty = score_length_penalty(num_facts, weights=weights)

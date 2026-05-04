@@ -22,6 +22,7 @@ from proofflow.rl_fdg.reward_types import CandidateGraphInput
 _RUNTIME: Optional[FDGRLEvaluator] = None
 _RUNTIME_KEY: Optional[str] = None
 _RUNTIME_LOCK = threading.RLock()
+_RUNTIME_ACTOR_HANDLES: Dict[tuple[str, str, str], Any] = {}
 
 
 def _runtime_key(config_path: str, extra_kwargs: Dict[str, Any]) -> str:
@@ -60,7 +61,30 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "no", "n", "off", ""}:
+            return False
+        try:
+            return float(normalized) > 0
+        except ValueError:
+            return False
+    return bool(value)
+
+
+def _coerce_trace_enabled(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "n", "off"}:
+            return False
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
     return bool(value)
 
 
@@ -69,11 +93,15 @@ def _compute_local(
     *,
     reward_config_path: str,
     reward_kwargs: Dict[str, Any],
+    include_reward_trace: bool,
 ) -> List[Dict[str, Any]]:
     # FDGRLEvaluator 复用一个 asyncio loop 和 vLLM/Lean runtime，不能被多个线程同时 run_until_complete。
     with _RUNTIME_LOCK:
         runtime = _get_runtime(reward_config_path=reward_config_path, **reward_kwargs)
-        return [breakdown.to_reward_dict() for breakdown in runtime.evaluate_batch_sync(batch_inputs)]
+        return [
+            breakdown.to_reward_dict(include_trace=include_reward_trace)
+            for breakdown in runtime.evaluate_batch_sync(batch_inputs)
+        ]
 
 
 def _compute_with_actor(
@@ -82,17 +110,47 @@ def _compute_with_actor(
     reward_config_path: str,
     runtime_actor_name: str,
     runtime_actor_namespace: str,
+    include_reward_trace: bool,
 ) -> List[Dict[str, Any]]:
     import ray
 
     from proofflow.rl_fdg.runtime_actor import get_or_create_runtime_actor
 
-    actor = get_or_create_runtime_actor(
-        reward_config_path=reward_config_path,
-        runtime_actor_name=runtime_actor_name,
-        runtime_actor_namespace=runtime_actor_namespace,
-    )
-    return ray.get(actor.evaluate.remote([asdict(item) for item in batch_inputs]))
+    actor_key = (str(Path(reward_config_path).resolve()), runtime_actor_name, runtime_actor_namespace)
+    actor = _RUNTIME_ACTOR_HANDLES.get(actor_key)
+    if actor is None:
+        actor = get_or_create_runtime_actor(
+            reward_config_path=reward_config_path,
+            runtime_actor_name=runtime_actor_name,
+            runtime_actor_namespace=runtime_actor_namespace,
+        )
+        _RUNTIME_ACTOR_HANDLES[actor_key] = actor
+    return ray.get(actor.evaluate.remote([asdict(item) for item in batch_inputs], include_reward_trace))
+
+
+def _invoke_compute_local(
+    batch_inputs: List[CandidateGraphInput],
+    *,
+    reward_config_path: str,
+    reward_kwargs: Dict[str, Any],
+    include_reward_trace: bool,
+) -> List[Dict[str, Any]]:
+    try:
+        return _compute_local(
+            batch_inputs,
+            reward_config_path=reward_config_path,
+            reward_kwargs=reward_kwargs,
+            include_reward_trace=include_reward_trace,
+        )
+    except TypeError as exc:
+        # Some tests and out-of-tree callers monkeypatch _compute_local with the old signature.
+        if "include_reward_trace" not in str(exc):
+            raise
+        return _compute_local(
+            batch_inputs,
+            reward_config_path=reward_config_path,
+            reward_kwargs=reward_kwargs,
+        )
 
 
 def compute_score(
@@ -102,8 +160,10 @@ def compute_score(
     extra_infos: Optional[List[Dict[str, Any]]] = None,
     reward_config_path: str = "",
     use_runtime_actor: bool | str = True,
+    runtime_actor_fallback_to_local: bool | str = False,
     runtime_actor_name: str = "fdg_rl_runtime",
     runtime_actor_namespace: str = "step_proof_rl",
+    include_reward_trace: bool | str | int = False,
     data_source: Optional[str] = None,
     solution_str: Optional[str] = None,
     ground_truth: Optional[str] = None,
@@ -145,6 +205,7 @@ def compute_score(
         )
 
     local_reward_kwargs = dict(reward_kwargs)
+    include_trace = _coerce_trace_enabled(include_reward_trace)
     rewards: List[Dict[str, Any]]
     if _coerce_bool(use_runtime_actor, default=True):
         try:
@@ -153,19 +214,24 @@ def compute_score(
                 reward_config_path=reward_config_path,
                 runtime_actor_name=str(runtime_actor_name or "fdg_rl_runtime"),
                 runtime_actor_namespace=str(runtime_actor_namespace or "step_proof_rl"),
+                include_reward_trace=include_trace,
             )
         except Exception as exc:
+            if not _coerce_bool(runtime_actor_fallback_to_local, default=False):
+                raise
             if os.getenv("STEP_PROOF_RL_TRACE", "1") != "0":
                 print(f"[rl_fdg] shared runtime actor unavailable, falling back to local evaluator: {exc}", flush=True)
-            rewards = _compute_local(
+            rewards = _invoke_compute_local(
                 batch_inputs,
                 reward_config_path=reward_config_path,
                 reward_kwargs=local_reward_kwargs,
+                include_reward_trace=include_trace,
             )
     else:
-        rewards = _compute_local(
+        rewards = _invoke_compute_local(
             batch_inputs,
             reward_config_path=reward_config_path,
             reward_kwargs=local_reward_kwargs,
+            include_reward_trace=include_trace,
         )
     return rewards[0] if single_item else rewards

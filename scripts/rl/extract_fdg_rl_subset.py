@@ -9,7 +9,8 @@ from omegaconf import OmegaConf
 
 from proofflow.rl_fdg.dataset import build_rl_examples, write_json_manifest, write_verl_parquet
 
-
+import sys;
+sys.path.append("/root/autodl-tmp/step-proof")
 DEFAULT_SOURCE_FILE = Path("/root/autodl-tmp/data_raw/ODA-Math-460k/data_2/shuffled_all.parquet")
 DEFAULT_CONFIG_FILE = Path("configs/rl/fdg_grpo.yaml")
 
@@ -75,7 +76,7 @@ def main() -> None:
         help="RL config file used to resolve train_file and val_file output paths.",
     )
     parser.add_argument("--train-count", type=int, default=10000)
-    parser.add_argument("--val-count", type=int, default=100)
+    parser.add_argument("--val-count", type=int, default=1000)
     parser.add_argument("--id-column", default="id")
     parser.add_argument("--question-column", default="question")
     parser.add_argument("--response-column", default="response")
