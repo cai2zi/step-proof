@@ -66,6 +66,6 @@ overrides:
   - trainer.n_gpus_per_node=4
   - trainer.nnodes=1
   - trainer.save_freq=2
-  - trainer.val_before_train=1
-  - trainer.test_freq=10
+  - trainer.val_before_train=0
+  - trainer.test_freq=-1
   - trainer.total_epochs=1
