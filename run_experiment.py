@@ -61,6 +61,10 @@ def _cmd_value(value: Any) -> str:
     return str(OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value)
 
 
+def _cfg_get(cfg: DictConfig, key: str, default: Any) -> Any:
+    return OmegaConf.select(cfg, key, default=default)
+
+
 def _count_jsonl(path: Path) -> int:
     if not path.is_file():
         return 0
@@ -399,6 +403,13 @@ class ExperimentRunner:
             str(self.stage1_dir / "failed.jsonl"),
             "--model-path",
             _cmd_value(cfg.model_path),
+            "--vllm-instances",
+            _cmd_value(_cfg_get(cfg, "vllm_instances", 1)),
+            _bool_flag(bool(_cfg_get(cfg, "parallel_startup", False)), "parallel-startup"),
+            "--startup-stagger-seconds",
+            _cmd_value(_cfg_get(cfg, "startup_stagger_seconds", 0.0)),
+            "--startup-timeout",
+            _cmd_value(_cfg_get(cfg, "startup_timeout", 1800)),
             "--tensor-parallel-size",
             _cmd_value(cfg.tensor_parallel_size),
             "--gpus",
@@ -477,6 +488,13 @@ class ExperimentRunner:
             _cmd_value(cfg.max_pending_validation_batches),
             "--formalizer-model-path",
             _cmd_value(cfg.formalizer_model_path),
+            "--formalizer-instances",
+            _cmd_value(_cfg_get(cfg, "formalizer_instances", 1)),
+            _bool_flag(bool(_cfg_get(cfg, "formalizer_parallel_startup", False)), "formalizer-parallel-startup"),
+            "--formalizer-startup-stagger-seconds",
+            _cmd_value(_cfg_get(cfg, "formalizer_startup_stagger_seconds", 0.0)),
+            "--formalizer-startup-timeout",
+            _cmd_value(_cfg_get(cfg, "formalizer_startup_timeout", 1800)),
             "--formalizer-tensor-parallel-size",
             _cmd_value(cfg.formalizer_tensor_parallel_size),
             "--formalizer-max-tokens",
@@ -550,6 +568,13 @@ class ExperimentRunner:
             _cmd_value(cfg.max_pending_validation_batches),
             "--prover-model-path",
             _cmd_value(cfg.prover_model_path),
+            "--prover-instances",
+            _cmd_value(_cfg_get(cfg, "prover_instances", 1)),
+            _bool_flag(bool(_cfg_get(cfg, "prover_parallel_startup", False)), "prover-parallel-startup"),
+            "--prover-startup-stagger-seconds",
+            _cmd_value(_cfg_get(cfg, "prover_startup_stagger_seconds", 0.0)),
+            "--prover-startup-timeout",
+            _cmd_value(_cfg_get(cfg, "prover_startup_timeout", 1800)),
             "--prover-tensor-parallel-size",
             _cmd_value(cfg.prover_tensor_parallel_size),
             "--prover-max-tokens",

@@ -86,7 +86,11 @@ def _model_config(batch_size: int = 8) -> ModelRuntimeConfig:
     )
 
 
-def _config(formalizer_batch_size: int = 8, prover_batch_size: int = 8) -> FDGRLEvaluatorConfig:
+def _config(
+    formalizer_batch_size: int = 8,
+    prover_batch_size: int = 8,
+    fdg_prompt: str = "fdg",
+) -> FDGRLEvaluatorConfig:
     return FDGRLEvaluatorConfig(
         weights=RewardWeights(),
         formalizer=_model_config(batch_size=formalizer_batch_size),
@@ -105,6 +109,7 @@ def _config(formalizer_batch_size: int = 8, prover_batch_size: int = 8) -> FDGRL
             prover_wait_ms=0,
         ),
         include_prover=True,
+        fdg_prompt=fdg_prompt,
     )
 
 
@@ -118,6 +123,21 @@ def _valid_graph_output(record_id: str = "alpha_example") -> str:
     {{"fact_id": "f_2", "text": "-pi/2 < alpha < pi/2", "parent_fact_ids": [], "is_final_answer": false, "origin": "problem"}},
     {{"fact_id": "f_3", "text": "cos alpha = 4/5", "parent_fact_ids": ["f_1", "f_2"], "is_final_answer": false, "origin": "derived"}},
     {{"fact_id": "f_4", "text": "cot(2 alpha) = 7/24", "parent_fact_ids": ["f_1", "f_3"], "is_final_answer": true, "origin": "derived"}}
+  ]
+}}
+""".strip()
+
+
+def _valid_origin4_graph_output(record_id: str = "alpha_example") -> str:
+    return f"""
+{{
+  "problem_id": "{record_id}",
+  "problem_text": "Given -pi/2 < alpha < pi/2 and sin alpha = 3/5, find cot(2 alpha).",
+  "facts": [
+    {{"fact_id": "f_1", "text": "sin alpha = 3/5", "parent_fact_ids": [], "is_final_answer": false, "origin": "given"}},
+    {{"fact_id": "f_2", "text": "-pi/2 < alpha < pi/2", "parent_fact_ids": [], "is_final_answer": false, "origin": "given"}},
+    {{"fact_id": "f_3", "text": "cos alpha = 4/5", "parent_fact_ids": ["f_1", "f_2"], "is_final_answer": false, "origin": "derived"}},
+    {{"fact_id": "f_4", "text": "cot(2 alpha) = 7/24", "parent_fact_ids": ["f_1", "f_3"], "is_final_answer": true, "origin": "answer"}}
   ]
 }}
 """.strip()
@@ -148,6 +168,66 @@ def test_evaluator_scores_valid_graph_with_prover_signal() -> None:
     assert result.num_final_verified == 1
     assert result.prover_score > 0
     assert result.final_answer_score > 0
+    evaluator.close()
+
+
+def test_evaluator_uses_candidate_fdg_prompt_for_origin_schema() -> None:
+    evaluator = FDGRLEvaluator(
+        _config(),
+        formalizer_bridge=FakeFormalizerBridge(),
+        prover_bridge=FakeProverBridge(),
+        lean_server=object(),
+        owned_lean_server=False,
+    )
+    invalid = evaluator.prepare_graph_inputs(
+        [
+            CandidateGraphInput(
+                record_id="legacy_origin_under_origin4",
+                problem_text="problem",
+                solution_or_cot="solution",
+                model_output=_valid_graph_output(),
+                extra_info={"fdg_prompt": "fdg_origin4"},
+            )
+        ]
+    )[0]
+    assert invalid.breakdown.validator_passed is False
+    assert any(error["type"] == "invalid_origin" for error in invalid.breakdown.errors)
+
+    valid = evaluator.prepare_graph_inputs(
+        [
+            CandidateGraphInput(
+                record_id="origin4",
+                problem_text="problem",
+                solution_or_cot="solution",
+                model_output=_valid_origin4_graph_output(),
+                extra_info={"fdg_prompt": "fdg_origin4"},
+            )
+        ]
+    )[0]
+    assert valid.breakdown.validator_passed is True
+    evaluator.close()
+
+
+def test_evaluator_uses_config_fdg_prompt_as_fallback() -> None:
+    evaluator = FDGRLEvaluator(
+        _config(fdg_prompt="fdg_origin4"),
+        formalizer_bridge=FakeFormalizerBridge(),
+        prover_bridge=FakeProverBridge(),
+        lean_server=object(),
+        owned_lean_server=False,
+    )
+    prepared = evaluator.prepare_graph_inputs(
+        [
+            CandidateGraphInput(
+                record_id="fallback_origin4",
+                problem_text="problem",
+                solution_or_cot="solution",
+                model_output=_valid_graph_output(),
+            )
+        ]
+    )[0]
+    assert prepared.breakdown.validator_passed is False
+    assert any(error["type"] == "invalid_origin" for error in prepared.breakdown.errors)
     evaluator.close()
 
 

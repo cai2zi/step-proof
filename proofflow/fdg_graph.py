@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .prompt_builder import build_chat_messages
 
 
-FDG_ORIGINS = {
+LEGACY_FDG_ORIGINS = {
     "problem",
     "definition",
     "derived",
@@ -20,8 +20,38 @@ FDG_ORIGINS = {
     "approximation",
     "other",
 }
+ORIGIN4_FDG_ORIGINS = {
+    "given",
+    "introduced",
+    "derived",
+    "answer",
+}
+FDG_ORIGINS = LEGACY_FDG_ORIGINS
+FDG_ORIGIN_SCHEMAS = {
+    "legacy": LEGACY_FDG_ORIGINS,
+    "origin4": ORIGIN4_FDG_ORIGINS,
+}
+FDG_PROMPT_ORIGIN_SCHEMAS = {
+    "fdg": "legacy",
+    "fdg_v1": "legacy",
+    "fdg_origin4": "origin4",
+}
 
 JsonDict = Dict[str, Any]
+
+
+def _normalize_prompt_name(prompt_name: str | None) -> str:
+    name = str(prompt_name or "fdg").strip() or "fdg"
+    return name[:-3] if name.endswith(".md") else name
+
+
+def fdg_origin_schema_for_prompt(prompt_name: str | None) -> str:
+    name = _normalize_prompt_name(prompt_name)
+    return FDG_PROMPT_ORIGIN_SCHEMAS.get(name, "legacy")
+
+
+def fdg_allowed_origins_for_prompt(prompt_name: str | None) -> set[str]:
+    return set(FDG_ORIGIN_SCHEMAS[fdg_origin_schema_for_prompt(prompt_name)])
 
 
 class FactItem(BaseModel):
@@ -170,8 +200,15 @@ def fdg_final_fact_ids(facts: List[FactItem | JsonDict]) -> List[str]:
     return final_ids
 
 
-def validate_fdg(fdg: JsonDict | FDGDocument) -> JsonDict:
-    report: JsonDict = {"passed": False, "errors": [], "warnings": []}
+def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> JsonDict:
+    origin_schema = fdg_origin_schema_for_prompt(prompt_name)
+    allowed_origins = fdg_allowed_origins_for_prompt(prompt_name)
+    report: JsonDict = {
+        "passed": False,
+        "errors": [],
+        "warnings": [],
+        "origin_schema": origin_schema,
+    }
     errors: List[JsonDict] = report["errors"]
     warnings: List[JsonDict] = report["warnings"]
 
@@ -218,11 +255,11 @@ def validate_fdg(fdg: JsonDict | FDGDocument) -> JsonDict:
         if not text:
             errors.append(_report_entry("empty_text", "Fact text must not be empty.", fact_id=fact_id))
 
-        if origin not in FDG_ORIGINS:
+        if origin not in allowed_origins:
             errors.append(
                 _report_entry(
                     "invalid_origin",
-                    f"Origin {fact.origin!r} is not one of {sorted(FDG_ORIGINS)}.",
+                    f"Origin {fact.origin!r} is not one of {sorted(allowed_origins)}.",
                     fact_id=fact_id,
                 )
             )
@@ -256,6 +293,13 @@ def validate_fdg(fdg: JsonDict | FDGDocument) -> JsonDict:
     final_ids = [fact.fact_id for fact in document.facts if fact.is_final_answer]
     if not final_ids:
         errors.append(_report_entry("missing_final_answer", "At least one fact must have is_final_answer=true."))
+    if origin_schema == "origin4" and len(final_ids) > 1:
+        errors.append(
+            _report_entry(
+                "multiple_final_answers",
+                "The fdg_origin4 schema requires exactly one fact with is_final_answer=true.",
+            )
+        )
 
     adjacency: Dict[str, List[str]] = {fact.fact_id: [] for fact in document.facts}
     reverse_adjacency: Dict[str, List[str]] = {fact.fact_id: [] for fact in document.facts}
@@ -284,35 +328,69 @@ def validate_fdg(fdg: JsonDict | FDGDocument) -> JsonDict:
             reverse_adjacency[fact_id].append(parent_id)
 
         origin = fact.origin.strip().lower()
-        if origin == "derived" and not parent_ids:
-            errors.append(
-                _report_entry(
-                    "derived_without_parents",
-                    "A derived fact must list at least one parent_fact_ids entry.",
-                    fact_id=fact_id,
+        if origin_schema == "origin4":
+            if origin == "given" and parent_ids:
+                errors.append(
+                    _report_entry(
+                        "given_fact_with_parents",
+                        "A given fact must not have parent_fact_ids.",
+                        fact_id=fact_id,
+                    )
                 )
-            )
-        if origin == "problem" and parent_ids:
-            errors.append(
-                _report_entry(
-                    "problem_fact_with_parents",
-                    "A problem-origin fact should not have parent_fact_ids.",
-                    fact_id=fact_id,
+            if origin == "derived" and not parent_ids:
+                errors.append(
+                    _report_entry(
+                        "derived_without_parents",
+                        "A derived fact must list at least one parent_fact_ids entry.",
+                        fact_id=fact_id,
+                    )
                 )
-            )
+            if origin == "answer" and not fact.is_final_answer:
+                errors.append(
+                    _report_entry(
+                        "answer_origin_without_final_flag",
+                        'A fact with origin="answer" must have is_final_answer=true.',
+                        fact_id=fact_id,
+                    )
+                )
+            if fact.is_final_answer and origin != "answer":
+                errors.append(
+                    _report_entry(
+                        "final_answer_origin_mismatch",
+                        'A final-answer fact must have origin="answer" under fdg_origin4.',
+                        fact_id=fact_id,
+                    )
+                )
+        else:
+            if origin == "derived" and not parent_ids:
+                errors.append(
+                    _report_entry(
+                        "derived_without_parents",
+                        "A derived fact must list at least one parent_fact_ids entry.",
+                        fact_id=fact_id,
+                    )
+                )
+            if origin == "problem" and parent_ids:
+                errors.append(
+                    _report_entry(
+                        "problem_fact_with_parents",
+                        "A problem-origin fact should not have parent_fact_ids.",
+                        fact_id=fact_id,
+                    )
+                )
+            if origin == "assumption" and not parent_ids and _looks_like_case_assumption(fact.text):
+                warnings.append(
+                    _report_entry(
+                        "possible_globalized_case_assumption",
+                        "This assumption looks like a local case assumption promoted to a root fact.",
+                        fact_id=fact_id,
+                    )
+                )
         if fact.is_final_answer and not parent_ids and fact.text.strip() not in document.problem_text:
             warnings.append(
                 _report_entry(
                     "final_answer_without_parents",
                     "This final-answer fact has no parents and does not appear verbatim in the problem.",
-                    fact_id=fact_id,
-                )
-            )
-        if origin == "assumption" and not parent_ids and _looks_like_case_assumption(fact.text):
-            warnings.append(
-                _report_entry(
-                    "possible_globalized_case_assumption",
-                    "This assumption looks like a local case assumption promoted to a root fact.",
                     fact_id=fact_id,
                 )
             )
@@ -389,7 +467,7 @@ def build_fdg_messages(
     )
 
 
-def parse_and_validate_fdg(content: str) -> FDGParseResult:
+def parse_and_validate_fdg(content: str, *, prompt_name: str = "fdg") -> FDGParseResult:
     try:
         raw_payload = parse_llm_json(content)
     except Exception as exc:
@@ -400,7 +478,7 @@ def parse_and_validate_fdg(content: str) -> FDGParseResult:
         }
         return FDGParseResult(ok=False, document=None, error_msg=_format_report_for_retry(report), report=report)
 
-    report = validate_fdg(raw_payload)
+    report = validate_fdg(raw_payload, prompt_name=prompt_name)
     if not report["passed"]:
         return FDGParseResult(
             ok=False,

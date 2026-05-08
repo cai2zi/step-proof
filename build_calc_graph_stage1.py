@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 from collections import deque
@@ -25,12 +26,13 @@ from dotenv import load_dotenv
 from proofflow.fdg_graph import (
     FDGDocument,
     build_fdg_messages,
+    fdg_origin_schema_for_prompt,
     fdg_final_fact_ids,
     fdg_topo_order,
     parse_and_validate_fdg,
 )
 from proofflow.graph_mode import FDG_GRAPH_MODE
-from proofflow.local_vllm import LocalLLMManager
+from proofflow.llm_worker import LLMWorkerConfig, LLMWorkerPool
 
 load_dotenv()
 
@@ -90,7 +92,7 @@ def _rel_source_file(parquet_dir: Path, fp: Path) -> str:
         return str(fp.resolve())
 
 
-def load_done_ids(out_path: Path) -> set:
+def load_done_ids(out_path: Path, *, expected_fdg_prompt: str | None = None) -> set:
     """Read already-completed record_ids from an existing output JSONL."""
     done: set = set()
     if not out_path.is_file():
@@ -102,12 +104,41 @@ def load_done_ids(out_path: Path) -> set:
                 continue
             try:
                 obj = json.loads(line)
-                rid = obj.get("meta", {}).get("record_id")
+                meta = obj.get("meta", {})
+                prompt = meta.get("fdg_prompt")
+                if expected_fdg_prompt is not None and prompt != expected_fdg_prompt:
+                    rid = meta.get("record_id", "<unknown>")
+                    raise SystemExit(
+                        f"{out_path}: record {rid} was created with fdg_prompt={prompt!r}, "
+                        f"but current config uses {expected_fdg_prompt!r}. "
+                        "Use a new exp.name, pass --no-resume, or remove the old output file."
+                    )
+                rid = meta.get("record_id")
                 if rid:
                     done.add(str(rid))
             except json.JSONDecodeError:
                 pass
     return done
+
+
+def load_terminal_ids(path: Path) -> set:
+    """Read record_ids from terminal side outputs such as skipped.jsonl/failed.jsonl."""
+    terminal: set = set()
+    if not path.is_file():
+        return terminal
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rid = obj.get("record_id") or (obj.get("meta") or {}).get("record_id")
+            if rid:
+                terminal.add(str(rid))
+    return terminal
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +165,7 @@ def _build_fdg_payload(
             "graph_build_tries": tries,
             "include_think_in_dag": include_think_in_dag,
             "fdg_prompt": record.fdg_prompt,
+            "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
         },
         "input": {
             "problem": record.problem,
@@ -195,6 +227,10 @@ def main() -> None:
                         help="Ignore existing output and start fresh (overwrite)")
     # vLLM
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--vllm-instances", type=int, default=1)
+    parser.add_argument("--parallel-startup", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--startup-stagger-seconds", type=float, default=0.0)
+    parser.add_argument("--startup-timeout", type=int, default=1800)
     parser.add_argument("--tensor-parallel-size", type=int, default=DEFAULT_TP)
     parser.add_argument("--gpus", default=DEFAULT_GPUS,
                         help="CUDA_VISIBLE_DEVICES for the local vLLM engine")
@@ -245,38 +281,24 @@ def main() -> None:
     if not args.parquet_dir.is_dir():
         raise SystemExit(f"--parquet-dir is not a directory: {args.parquet_dir}")
 
-    # Set CUDA_VISIBLE_DEVICES before importing vllm
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
-
     # Resume: load already-done IDs
     done_ids: set = set()
     if not args.no_resume:
-        done_ids = load_done_ids(args.out)
+        done_ids = load_done_ids(args.out, expected_fdg_prompt=args.fdg_prompt)
+        failed_ids = load_terminal_ids(args.failed)
+        skipped_ids = load_terminal_ids(args.skipped)
+        done_ids.update(failed_ids)
+        done_ids.update(skipped_ids)
         if done_ids:
             print(f"[resume] skipping {len(done_ids)} already-processed record(s)")
+        if failed_ids:
+            print(f"[resume] includes {len(failed_ids)} previously failed record(s)")
+        if skipped_ids:
+            print(f"[resume] includes {len(skipped_ids)} previously skipped record(s)")
 
     # Prepare output dirs
     for p in (args.out, args.skipped, args.failed):
         p.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load local vLLM
-    print(f"[init] loading model {args.model_path} (tp={args.tensor_parallel_size}, gpus={args.gpus}) ...")
-    llm = LocalLLMManager(
-        model_path=args.model_path,
-        tensor_parallel_size=args.tensor_parallel_size,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        presence_penalty=args.presence_penalty,
-        frequency_penalty=args.frequency_penalty,
-        seed=args.seed,
-        top_k=args.top_k,
-        token_limit=args.token_limit,
-        dtype=args.dtype,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        chat_template_kwargs=chat_template_kwargs,
-    )
-    print("[init] model ready.\n")
 
     # Parquet iterator with column check
     required = [args.id_column, args.question_column, args.response_column]
@@ -325,101 +347,190 @@ def main() -> None:
 
     # Pre-fill pool
     pool: deque[PendingRecord] = deque()
-    while len(pool) < args.batch_size:
-        rec = next_pending()
-        if rec is None:
-            break
-        pool.append(rec)
+    worker_count = args.vllm_instances
+    if worker_count < 1:
+        raise SystemExit("--vllm-instances must be >= 1")
+    if args.batch_size < 1:
+        raise SystemExit("--batch-size must be >= 1")
+    refill_target = worker_count * args.batch_size
+
+    def refill_pool() -> None:
+        while len(pool) < refill_target:
+            rec = next_pending()
+            if rec is None:
+                break
+            pool.append(rec)
+
+    refill_pool()
+    if not pool:
+        print("[done] no pending records.")
+        return
 
     stats = {"ok": 0, "skipped": 0, "failed": 0, "retried": 0}
 
+    # Load local vLLM workers after discovering pending work.
+    print(
+        f"[init] loading model {args.model_path} "
+        f"(instances={args.vllm_instances}, tp={args.tensor_parallel_size}, gpus={args.gpus}) ..."
+    )
+    llm_pool = LLMWorkerPool(
+        base_config=LLMWorkerConfig(
+            name="graph",
+            gpus="",
+            model_path=args.model_path,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            presence_penalty=args.presence_penalty,
+            frequency_penalty=args.frequency_penalty,
+            seed=args.seed,
+            top_k=args.top_k,
+            token_limit=args.token_limit,
+            dtype=args.dtype,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            chat_template_kwargs=(
+                chat_template_kwargs
+                if chat_template_kwargs is not None
+                else {"enable_thinking": False}
+            ),
+        ),
+        instances=args.vllm_instances,
+        gpus=args.gpus,
+        startup_timeout=args.startup_timeout,
+        parallel_startup=args.parallel_startup,
+        startup_stagger_seconds=args.startup_stagger_seconds,
+    )
+    print(f"[init] model workers ready: {llm_pool.gpu_groups}\n")
+
     write_mode = "w" if args.no_resume else "a"
-    with (
-        open(args.out, write_mode, encoding="utf-8") as graphs_f,
-        open(args.skipped, write_mode, encoding="utf-8") as skipped_f,
-        open(args.failed, write_mode, encoding="utf-8") as failed_f,
-    ):
-        while pool:
-            batch = list(pool)
-            pool.clear()
 
-            print(f"\n[batch] size={len(batch)}  (ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})")
-            contents = llm.batch_generate([r.messages for r in batch])
+    def next_batch() -> List[PendingRecord]:
+        batch: List[PendingRecord] = []
+        while len(batch) < args.batch_size and pool:
+            batch.append(pool.popleft())
+        return batch
 
-            for record, content in zip(batch, contents):
+    def dispatch_next(
+        executor: concurrent.futures.ThreadPoolExecutor,
+        future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord]]],
+        worker_id: int,
+    ) -> bool:
+        refill_pool()
+        batch = next_batch()
+        if not batch:
+            return False
+        future = executor.submit(
+            llm_pool[worker_id].generate,
+            [record.messages for record in batch],
+        )
+        future_to_batch[future] = (worker_id, batch)
+        print(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
+        return True
 
-                # ── token overflow ──────────────────────────────────────────
-                if content is None:
-                    skipped_f.write(json.dumps({
-                        "record_id": record.record_id,
-                        "source_file": record.source_file,
-                        "source_row_pos": record.source_row_pos,
-                        "reason": "token_overflow",
-                        "input": {
-                            "problem": record.problem,
-                            "raw_cot": record.raw_cot,
-                        },
-                        "extraction": {
-                            "raw_response": None,
-                        },
-                    }, ensure_ascii=False) + "\n")
-                    skipped_f.flush()
-                    stats["skipped"] += 1
-                    print(f"  [skip]  {record.record_id} (token overflow)")
-                    continue
+    try:
+        with (
+            open(args.out, write_mode, encoding="utf-8") as graphs_f,
+            open(args.skipped, write_mode, encoding="utf-8") as skipped_f,
+            open(args.failed, write_mode, encoding="utf-8") as failed_f,
+            concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor,
+        ):
+            future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord]]] = {}
+            for worker_id in range(worker_count):
+                dispatch_next(executor, future_to_batch, worker_id)
 
-                # ── parse + validate ────────────────────────────────────────
-                result = parse_and_validate_fdg(content)
-
-                if result.ok:
-                    payload = _build_fdg_payload(
-                        record,
-                        result.document,
-                        record.retry_count + 1,
-                        args.include_think_in_dag,
-                        content,
-                        list((result.report or {}).get("warnings") or []),
+            completed_batches = 0
+            while future_to_batch:
+                done, _ = concurrent.futures.wait(
+                    future_to_batch,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    worker_id, batch = future_to_batch[future]
+                    del future_to_batch[future]
+                    contents = future.result()
+                    completed_batches += 1
+                    print(
+                        f"\n[worker:{worker_id}] completed batch size={len(batch)} "
+                        f"completed_batches={completed_batches} "
+                        f"(ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})"
                     )
-                    graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                    graphs_f.flush()
-                    stats["ok"] += 1
-                    print(f"  [ok]    {record.record_id}  (tries={record.retry_count + 1})")
-                    continue
 
-                # ── max retries reached → orphan-drop fallback ──────────────
-                if record.retry_count >= args.max_retries:
-                    failed_f.write(json.dumps({
-                        "record_id": record.record_id,
-                        "source_file": record.source_file,
-                        "source_row_pos": record.source_row_pos,
-                        "retry_count": record.retry_count,
-                        "last_error": result.error_msg,
-                        "input": {
-                            "problem": record.problem,
-                            "raw_cot": record.raw_cot,
-                        },
-                        "extraction": {
-                            "raw_response": content,
-                        },
-                    }, ensure_ascii=False) + "\n")
-                    failed_f.flush()
-                    stats["failed"] += 1
-                    print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
-                    continue
+                    for record, content in zip(batch, contents):
 
-                # ── retry: update messages and put back in pool ─────────────
-                record.messages = append_error_to_messages(record.messages, result.error_msg)
-                record.retry_count += 1
-                pool.appendleft(record)   # retries go to the front
-                stats["retried"] += 1
-                print(f"  [retry] {record.record_id}  (attempt {record.retry_count}/{args.max_retries})")
+                        # ── token overflow ──────────────────────────────────
+                        if content is None:
+                            skipped_f.write(json.dumps({
+                                "record_id": record.record_id,
+                                "source_file": record.source_file,
+                                "source_row_pos": record.source_row_pos,
+                                "fdg_prompt": record.fdg_prompt,
+                                "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+                                "reason": "token_overflow",
+                                "input": {
+                                    "problem": record.problem,
+                                    "raw_cot": record.raw_cot,
+                                },
+                                "extraction": {
+                                    "raw_response": None,
+                                },
+                            }, ensure_ascii=False) + "\n")
+                            skipped_f.flush()
+                            stats["skipped"] += 1
+                            print(f"  [skip]  {record.record_id} (token overflow)")
+                            continue
 
-            # ── refill pool with new records ────────────────────────────────
-            while len(pool) < args.batch_size:
-                rec = next_pending()
-                if rec is None:
-                    break
-                pool.append(rec)
+                        # ── parse + validate ────────────────────────────────
+                        result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
+
+                        if result.ok:
+                            payload = _build_fdg_payload(
+                                record,
+                                result.document,
+                                record.retry_count + 1,
+                                args.include_think_in_dag,
+                                content,
+                                list((result.report or {}).get("warnings") or []),
+                            )
+                            graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                            graphs_f.flush()
+                            stats["ok"] += 1
+                            print(f"  [ok]    {record.record_id}  (tries={record.retry_count + 1})")
+                            continue
+
+                        # ── max retries reached → orphan-drop fallback ──────
+                        if record.retry_count >= args.max_retries:
+                            failed_f.write(json.dumps({
+                                "record_id": record.record_id,
+                                "source_file": record.source_file,
+                                "source_row_pos": record.source_row_pos,
+                                "fdg_prompt": record.fdg_prompt,
+                                "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+                                "retry_count": record.retry_count,
+                                "last_error": result.error_msg,
+                                "input": {
+                                    "problem": record.problem,
+                                    "raw_cot": record.raw_cot,
+                                },
+                                "extraction": {
+                                    "raw_response": content,
+                                },
+                            }, ensure_ascii=False) + "\n")
+                            failed_f.flush()
+                            stats["failed"] += 1
+                            print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
+                            continue
+
+                        # ── retry: update messages and put back in pool ─────
+                        record.messages = append_error_to_messages(record.messages, result.error_msg)
+                        record.retry_count += 1
+                        pool.appendleft(record)   # retries go to the front
+                        stats["retried"] += 1
+                        print(f"  [retry] {record.record_id}  (attempt {record.retry_count}/{args.max_retries})")
+
+                    dispatch_next(executor, future_to_batch, worker_id)
+    finally:
+        llm_pool.close()
 
     print(
         f"\n[done] ok={stats['ok']}  skipped={stats['skipped']}  "

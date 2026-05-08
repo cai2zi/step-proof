@@ -9,7 +9,7 @@ def build_builder_prompt_messages(
     *,
     problem_text: str,
     solution_or_cot: str,
-    prompt_name: str = "fdg_v1",
+    prompt_name: str = "fdg_origin4",
     include_think_in_dag: bool = False,
 ) -> List[Dict[str, str]]:
     return build_fdg_messages(

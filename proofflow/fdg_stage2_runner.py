@@ -21,7 +21,7 @@ from .fdg_stage_common import (
     restore_fdg_stage2_record_state,
 )
 from .lean_check import LeanServer
-from .llm_worker import LLMWorkerClient, LLMWorkerConfig
+from .llm_worker import LLMWorkerConfig, LLMWorkerPool
 from .runtime_common import (
     append_jsonl,
     extract_last_lean_block,
@@ -60,7 +60,7 @@ class FDGStage2Runner:
         self.failed_path = args.failed
         self.checkpoint_dir = args.checkpoint_dir
         self.done_ids: set[str] = set()
-        self.formalizer: Optional[LLMWorkerClient] = None
+        self.formalizers: Optional[LLMWorkerPool] = None
         self.lean_server: Optional[LeanServer] = lean_server
         self.owned_lean_server = (
             owned_lean_server if owned_lean_server is not None else lean_server is None
@@ -144,7 +144,7 @@ class FDGStage2Runner:
         if self.args.formalizer_gpus:
             return self.args.formalizer_gpus
         all_devices = [device.strip() for device in self.args.gpus.split(",") if device.strip()]
-        total_needed = self.args.formalizer_tensor_parallel_size
+        total_needed = self.args.formalizer_instances * self.args.formalizer_tensor_parallel_size
         if len(all_devices) < total_needed:
             raise RuntimeError(
                 "Not enough GPUs in --gpus to derive the formalizer worker. "
@@ -157,7 +157,10 @@ class FDGStage2Runner:
         print(
             "[init] loading formalizer",
             self.args.formalizer_model_path,
-            f"(tp={self.args.formalizer_tensor_parallel_size}, gpus={formalizer_gpus}) ...",
+            (
+                f"(instances={self.args.formalizer_instances}, "
+                f"tp={self.args.formalizer_tensor_parallel_size}, gpus={formalizer_gpus}) ..."
+            ),
         )
         chat_template_kwargs: Dict[str, Any] = {"enable_thinking": False}
         if self.args.formalizer_chat_template_kwargs_json:
@@ -166,10 +169,10 @@ class FDGStage2Runner:
                 raise RuntimeError("--formalizer-chat-template-kwargs-json must be a JSON object")
             chat_template_kwargs = parsed
 
-        self.formalizer = LLMWorkerClient(
-            config=LLMWorkerConfig(
+        self.formalizers = LLMWorkerPool(
+            base_config=LLMWorkerConfig(
                 name="formalizer",
-                gpus=formalizer_gpus,
+                gpus="",
                 model_path=self.args.formalizer_model_path or DEFAULT_FORMALIZER_MODEL_PATH,
                 tensor_parallel_size=self.args.formalizer_tensor_parallel_size,
                 max_tokens=self.args.formalizer_max_tokens,
@@ -183,7 +186,12 @@ class FDGStage2Runner:
                 seed=self.args.formalizer_seed,
                 top_k=self.args.formalizer_top_k,
                 chat_template_kwargs=chat_template_kwargs,
-            )
+            ),
+            instances=self.args.formalizer_instances,
+            gpus=formalizer_gpus,
+            startup_timeout=self.args.formalizer_startup_timeout,
+            parallel_startup=self.args.formalizer_parallel_startup,
+            startup_stagger_seconds=self.args.formalizer_startup_stagger_seconds,
         )
         if self.lean_server is None:
             pool_size = (
@@ -311,9 +319,12 @@ class FDGStage2Runner:
                 )
         return tasks
 
-    async def _generate_outputs(self, tasks: List[Dict[str, Any]]) -> List[Optional[str]]:
-        assert self.formalizer is not None
-        return await asyncio.to_thread(self.formalizer.generate, [task["messages"] for task in tasks])
+    async def _generate_outputs(self, worker_id: int, tasks: List[Dict[str, Any]]) -> List[Optional[str]]:
+        assert self.formalizers is not None
+        return await asyncio.to_thread(
+            self.formalizers[worker_id].generate,
+            [task["messages"] for task in tasks],
+        )
 
     async def _validate_and_apply_one_output(self, task: Dict[str, Any], output: Optional[str]) -> None:
         result = await self._validate_batch_output(task, output)
@@ -365,11 +376,11 @@ class FDGStage2Runner:
                 await self._enqueue_form_locked(task["record_id"], task["fact_id"])
             await self._persist_record_locked(task["record_id"])
 
-    async def _run_batch(self, batch_items: List[Tuple[str, str]]) -> None:
+    async def _run_batch(self, worker_id: int, batch_items: List[Tuple[str, str]]) -> None:
         tasks = await self._prepare_batch(batch_items)
         if not tasks:
             return
-        outputs = await self._generate_outputs(tasks)
+        outputs = await self._generate_outputs(worker_id, tasks)
         for task, output in zip(tasks, outputs):
             await self.validation_backpressure.acquire()
             await self.validation_queue.put((task, output))
@@ -408,15 +419,17 @@ class FDGStage2Runner:
         await asyncio.gather(*self.validation_workers, return_exceptions=True)
         self.validation_workers.clear()
 
-    async def _form_worker(self) -> None:
+    async def _form_worker(self, worker_id: int) -> None:
         while True:
             self._raise_validation_error()
             batch = await self._pop_batch(self.args.form_batch_size)
             if batch:
                 print(
-                    f"[fdg-form] gpu_batch={len(batch)} pending_validation_items={self._pending_validation_items()} ready_queue={self.form_queue.qsize()}"
+                    f"[fdg-form:{worker_id}] gpu_batch={len(batch)} "
+                    f"pending_validation_items={self._pending_validation_items()} "
+                    f"ready_queue={self.form_queue.qsize()}"
                 )
-                await self._run_batch(batch)
+                await self._run_batch(worker_id, batch)
                 continue
             async with self.state_lock:
                 records_terminal = all(fdg_stage2_record_terminal(record) for record in self.records.values())
@@ -473,7 +486,10 @@ class FDGStage2Runner:
         await self.seed_ready_queue()
         self._start_validation_workers()
         try:
-            await asyncio.gather(self._form_worker())
+            worker_count = len(self.formalizers) if self.formalizers is not None else 1
+            await asyncio.gather(
+                *(self._form_worker(worker_id) for worker_id in range(worker_count))
+            )
         except Exception as exc:
             append_jsonl(self.failed_path, {"created_at": utc_now_iso(), "error": str(exc)})
             raise
@@ -481,8 +497,8 @@ class FDGStage2Runner:
             await self._cancel_validation_workers()
             if self.owned_lean_server and self.lean_server is not None:
                 await self.lean_server.aclose()
-            if self.formalizer is not None:
-                self.formalizer.close()
+            if self.formalizers is not None:
+                self.formalizers.close()
             self._write_runtime_metrics()
 
         done = sum(1 for record in self.records.values() if fdg_stage2_record_terminal(record))
@@ -547,6 +563,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--formalizer-model-path", default=DEFAULT_FORMALIZER_MODEL_PATH)
+    parser.add_argument("--formalizer-instances", type=int, default=1)
+    parser.add_argument("--formalizer-parallel-startup", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--formalizer-startup-stagger-seconds", type=float, default=0.0)
+    parser.add_argument("--formalizer-startup-timeout", type=int, default=1800)
     parser.add_argument("--formalizer-tensor-parallel-size", type=int, default=DEFAULT_FORMALIZER_TP)
     parser.add_argument("--formalizer-max-tokens", type=int, default=8192)
     parser.add_argument("--formalizer-token-limit", type=int, default=32768)

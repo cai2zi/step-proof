@@ -1,0 +1,69 @@
+exp_name: test
+output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+
+env:
+  lean4_python: /root/autodl-tmp/env/lean4/bin/python
+  eval_python: /root/autodl-tmp/env/eval/bin/python
+
+data:
+  bench_path: /root/autodl-tmp/data_raw/bench/bench_all_normalized.parquet
+  id_column: id
+  question_column: question
+  gold_column: gold
+  source_column: source
+  limit_per_source: null
+  # Set to null to evaluate all sources. Otherwise list the bench sources to keep.
+  # Available sources:
+    # - aime25_test
+    # - aime_2024
+    # - brumo_2025
+    # - cmimc_2025
+    # - hmmt_feb_2025
+    # - math_500_test
+    # - gsm8k_main_test
+    # - olympiadbench_oe_to_maths_en_comp
+    # - omni_math_test
+  sources:
+    - aime25_test
+    - aime_2024
+    - brumo_2025
+    - cmimc_2025
+    - hmmt_feb_2025
+    - math_500_test
+    - gsm8k_main_test
+    # - olympiadbench_oe_to_maths_en_comp
+    # - omni_math_test
+  seed: 42
+
+prompt:
+  template: |
+    Solve the following math problem. Think step by step, and make the last line exactly:
+    Therefore, the final answer is: $\boxed{ANSWER}$.
+
+    Problem:
+    {question}
+
+rollout:
+  model_path: /root/autodl-tmp/models/Qwen3-8B
+  instances: 8
+  gpus: 0,1,2,3,4,5,6,7
+  tensor_parallel_size: 1
+  dtype: float16
+  gpu_memory_utilization: 0.95
+  max_model_len: 40960
+  max_tokens: 32768
+  n: 4
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  seed: 1234
+  micro_batch_size: 8
+  progress: true
+  resume: true
+  parallel_startup: true
+  startup_stagger_seconds: 0
+  chat_template_kwargs:
+    enable_thinking: true
+
+math_verify:
+  random_seeds: [0, 1, 2]

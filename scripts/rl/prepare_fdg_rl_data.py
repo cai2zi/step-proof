@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument("--response-column", default="response")
     parser.add_argument("--answer-column", default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--fdg-prompt", default="fdg_v1")
+    parser.add_argument("--fdg-prompt", default="fdg_origin4")
     parser.add_argument("--include-think-in-dag", action="store_true")
     parser.add_argument("--train-ratio", type=float, default=0.98)
     parser.add_argument("--val-ratio", type=float, default=0.01)

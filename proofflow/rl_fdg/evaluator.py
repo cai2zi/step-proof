@@ -129,6 +129,7 @@ def load_evaluator_config(config_path: str | Path) -> FDGRLEvaluatorConfig:
         scheduler=scheduler,
         trace=trace,
         include_prover=_coerce_bool(runtime.get("include_prover", True)),
+        fdg_prompt=str(runtime.get("fdg_prompt") or "fdg"),
     )
 
 
@@ -239,7 +240,13 @@ class FDGRLEvaluator:
                 f"sample_indices length mismatch: expected {len(inputs)}, got {len(sample_indices)}"
             )
 
-        parsed_items = [parse_fdg_candidate(item.model_output) for item in inputs]
+        parsed_items = [
+            parse_fdg_candidate(
+                item.model_output,
+                prompt_name=str((item.extra_info or {}).get("fdg_prompt") or self.config.fdg_prompt or "fdg"),
+            )
+            for item in inputs
+        ]
         prepared_items: List[PreparedGraphInput] = []
 
         for input_index, (sample_index, candidate, parsed) in enumerate(

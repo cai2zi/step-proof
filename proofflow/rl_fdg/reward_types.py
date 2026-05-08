@@ -74,6 +74,7 @@ class FDGRLEvaluatorConfig:
     scheduler: SchedulerRuntimeConfig = field(default_factory=SchedulerRuntimeConfig)
     trace: TraceRuntimeConfig = field(default_factory=TraceRuntimeConfig)
     include_prover: bool = True
+    fdg_prompt: str = "fdg"
 
 
 @dataclass(frozen=True)

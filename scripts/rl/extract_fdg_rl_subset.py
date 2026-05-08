@@ -81,7 +81,7 @@ def main() -> None:
     parser.add_argument("--question-column", default="question")
     parser.add_argument("--response-column", default="response")
     parser.add_argument("--answer-column", default=None)
-    parser.add_argument("--fdg-prompt", default="fdg_v1")
+    parser.add_argument("--fdg-prompt", default="fdg_origin4")
     parser.add_argument("--include-think-in-dag", action="store_true")
     parser.add_argument("--data-source", default="fdg_builder")
     args = parser.parse_args()

@@ -4,8 +4,9 @@ import asyncio
 import multiprocessing as mp
 import os
 import queue
+import time
 import traceback
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 
@@ -117,8 +118,10 @@ class LLMWorkerClient:
         self,
         config: LLMWorkerConfig,
         startup_timeout: int = 1800,
+        wait_ready: bool = True,
     ) -> None:
         self.config = config
+        self._ready = False
         self._ctx = mp.get_context("spawn")
         self._request_queue: mp.Queue = self._ctx.Queue()
         self._response_queue: mp.Queue = self._ctx.Queue()
@@ -129,9 +132,12 @@ class LLMWorkerClient:
             name=f"llm-worker-{config.name}",
         )
         self._process.start()
-        self._wait_until_ready(startup_timeout)
+        if wait_ready:
+            self.wait_until_ready(startup_timeout)
 
-    def _wait_until_ready(self, timeout: int) -> None:
+    def wait_until_ready(self, timeout: int) -> None:
+        if self._ready:
+            return
         try:
             message = self._response_queue.get(timeout=timeout)
         except queue.Empty as e:
@@ -142,6 +148,7 @@ class LLMWorkerClient:
 
         msg_type = message.get("type")
         if msg_type == "ready":
+            self._ready = True
             return
 
         self.close(force=True)
@@ -193,3 +200,84 @@ class LLMWorkerClient:
         if self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=5)
+
+
+def split_gpu_groups(gpus: str, *, instances: int, tensor_parallel_size: int) -> List[str]:
+    devices = [device.strip() for device in gpus.split(",") if device.strip()]
+    if instances < 1:
+        raise ValueError(f"instances must be >= 1, got {instances}")
+    if tensor_parallel_size < 1:
+        raise ValueError(f"tensor_parallel_size must be >= 1, got {tensor_parallel_size}")
+    total_needed = instances * tensor_parallel_size
+    if len(devices) < total_needed:
+        raise ValueError(
+            f"Not enough GPUs for {instances} worker(s) with tp={tensor_parallel_size}. "
+            f"Need {total_needed}, got {len(devices)} from {gpus!r}."
+        )
+    return [
+        ",".join(devices[start : start + tensor_parallel_size])
+        for start in range(0, total_needed, tensor_parallel_size)
+    ]
+
+
+class LLMWorkerPool:
+    """Owns multiple independent vLLM worker subprocesses."""
+
+    def __init__(
+        self,
+        *,
+        base_config: LLMWorkerConfig,
+        instances: int,
+        gpus: str,
+        startup_timeout: int = 1800,
+        parallel_startup: bool = False,
+        startup_stagger_seconds: float = 0.0,
+    ) -> None:
+        self.gpu_groups = split_gpu_groups(
+            gpus,
+            instances=instances,
+            tensor_parallel_size=base_config.tensor_parallel_size,
+        )
+        self.workers: List[LLMWorkerClient] = []
+        try:
+            for idx, gpu_group in enumerate(self.gpu_groups):
+                config = replace(
+                    base_config,
+                    name=f"{base_config.name}-{idx}",
+                    gpus=gpu_group,
+                )
+                self.workers.append(
+                    LLMWorkerClient(
+                        config=config,
+                        startup_timeout=startup_timeout,
+                        wait_ready=not parallel_startup,
+                    )
+                )
+                if parallel_startup:
+                    print(
+                        f"[init] started {config.name} on gpus={gpu_group}",
+                        flush=True,
+                    )
+                    if startup_stagger_seconds > 0 and idx + 1 < len(self.gpu_groups):
+                        time.sleep(startup_stagger_seconds)
+            if parallel_startup:
+                for idx, worker in enumerate(self.workers):
+                    worker.wait_until_ready(startup_timeout)
+                    print(
+                        f"[init] {worker.config.name} ready on gpus={worker.config.gpus}",
+                        flush=True,
+                    )
+        except Exception:
+            self.close(force=True)
+            raise
+
+    def __len__(self) -> int:
+        return len(self.workers)
+
+    def __getitem__(self, idx: int) -> LLMWorkerClient:
+        return self.workers[idx]
+
+    def close(self, force: bool = False) -> None:
+        for worker in self.workers:
+            worker.close(force=force)
+        self.workers.clear()

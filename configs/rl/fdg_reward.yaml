@@ -10,6 +10,7 @@ weights:
 
 runtime:
   include_prover: true
+  fdg_prompt: fdg_origin4
   scheduler:
     graph_wait_ms: 200
     max_graph_batch_size: 2048

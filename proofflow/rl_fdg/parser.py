@@ -19,7 +19,7 @@ class ParsedFDGCandidate:
     parse_error: Optional[str] = None
 
 
-def parse_fdg_candidate(output_text: str) -> ParsedFDGCandidate:
+def parse_fdg_candidate(output_text: str, *, prompt_name: str = "fdg") -> ParsedFDGCandidate:
     try:
         raw_payload = parse_llm_json(output_text)
     except Exception as exc:
@@ -36,7 +36,7 @@ def parse_fdg_candidate(output_text: str) -> ParsedFDGCandidate:
             parse_error=str(exc),
         )
 
-    report = validate_fdg(raw_payload)
+    report = validate_fdg(raw_payload, prompt_name=prompt_name)
     if not report["passed"]:
         return ParsedFDGCandidate(
             valid_json=True,
