@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 
 from proofflow.fdg_graph import (
     FDGDocument,
+    FDG_OUTPUT_TRUNCATED_RETRY_HINT,
     build_fdg_messages,
     fdg_origin_schema_for_prompt,
     fdg_final_fact_ids,
@@ -491,7 +492,7 @@ def main() -> None:
                             content = ""
                         conversation = list(record.messages) + [{"role": "assistant", "content": content}]
                         if generation.get("output_truncated"):
-                            error_msg = "output_truncated"
+                            error_msg = FDG_OUTPUT_TRUNCATED_RETRY_HINT
                             if record.retry_count >= args.max_retries:
                                 failed_f.write(json.dumps({
                                     "record_id": record.record_id,

@@ -35,7 +35,14 @@ FDG_PROMPT_ORIGIN_SCHEMAS = {
     "fdg": "legacy",
     "fdg_v1": "legacy",
     "fdg_origin4": "origin4",
+    "fdg_origin4_reduce": "origin4",
 }
+
+FDG_OUTPUT_TRUNCATED_RETRY_HINT = (
+    "The previous FDG generation was truncated because it reached the maximum output length. "
+    "Please keep the public Reasoning section brief and checklist-style, avoid any hidden chain-of-thought "
+    "or repetitive self-debate, and generate the final FDG JSON as concisely as possible."
+)
 
 JsonDict = Dict[str, Any]
 

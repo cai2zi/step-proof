@@ -1,5 +1,5 @@
 output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
-name: qwen3_8b
+name: qwen3_8b_8
 
 env:
   lean4_python: /root/autodl-tmp/env/lean4/bin/python
@@ -10,15 +10,15 @@ data:
   question_column: question
   gold_column: gold
   source_column: source
-  limit_per_source: null
+  limit_per_source: 8
   sources:
-    - aime25_test
-    - aime_2024
-    - brumo_2025
-    - cmimc_2025
-    - hmmt_feb_2025
+    # - aime25_test
+    # - aime_2024
+    # - brumo_2025
+    # - cmimc_2025
+    # - hmmt_feb_2025
     - math_500_test
-    - gsm8k_main_test
+    # - gsm8k_main_test
   seed: 42
 
 prompt:
@@ -31,8 +31,8 @@ prompt:
 
 rollout:
   model_path: /root/autodl-tmp/models/Qwen3-8B
-  instances: 8
-  gpus: 0,1,2,3,4,5,6,7
+  instances: 2
+  gpus: 0,1
   tensor_parallel_size: 1
   dtype: float16
   gpu_memory_utilization: 0.95
@@ -43,7 +43,7 @@ rollout:
   top_p: 0.95
   top_k: 20
   seed: 1234
-  micro_batch_size: 8
+  micro_batch_size: 4
   progress: true
   resume: true
   parallel_startup: true

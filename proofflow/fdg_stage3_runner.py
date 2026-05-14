@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
+from .fdg_graph import FDG_OUTPUT_TRUNCATED_RETRY_HINT
 from .fdg_stage_common import (
     PROVE_TERMINAL,
     build_fdg_prove_messages,
@@ -264,7 +265,7 @@ class FDGStage3Runner:
         if generation.get("output_truncated"):
             return {
                 "kind": "output_truncated",
-                "error_msg": "output_truncated",
+                "error_msg": FDG_OUTPUT_TRUNCATED_RETRY_HINT,
                 "lean_code": "",
                 "finish_reason": generation.get("finish_reason"),
                 "stop_reason": generation.get("stop_reason"),

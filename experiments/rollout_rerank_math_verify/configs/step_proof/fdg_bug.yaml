@@ -1,6 +1,6 @@
 output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
-name: fdg_bug
-rollout_name: qwen3_8b
+name: reduce_prompt
+rollout_name: qwen3_8b_8
 
 exp:
   name: step_proof_results
@@ -22,12 +22,12 @@ stage1:
   response_column: response
   limit: -1
   model_path: /root/autodl-tmp/models/Qwen3-8B
-  vllm_instances: 8
-  parallel_startup: true
+  vllm_instances: 2
+  parallel_startup: True
   startup_stagger_seconds: 0
   startup_timeout: 1800
   tensor_parallel_size: 1
-  gpus: 0,1,2,3,4,5,6,7
+  gpus: 0,1
   dtype: float16
   gpu_memory_utilization: 0.95
   max_tokens: 8192
@@ -42,7 +42,7 @@ stage1:
     enable_thinking: true
   batch_size: 16
   max_retries: 3
-  fdg_prompt: fdg_origin4
+  fdg_prompt: fdg_origin4_reduce
   include_think_in_dag: false
 
 lean_runtime:
@@ -53,14 +53,14 @@ lean_runtime:
   lean_temp_dir: lean_jobs_shared
 
 stage2:
-  gpus: 0,1,2,3,4,5,6,7
+  gpus: 0,1
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
   formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
-  formalizer_instances: 8
-  formalizer_parallel_startup: true
+  formalizer_instances: 2
+  formalizer_parallel_startup: False
   formalizer_startup_stagger_seconds: 0
   formalizer_startup_timeout: 1800
   formalizer_tensor_parallel_size: 1
@@ -80,14 +80,14 @@ stage2:
   limit: -1
 
 stage3:
-  gpus: 0,1,2,3,4,5,6,7
+  gpus: 0,1
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
   prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
-  prover_instances: 8
-  prover_parallel_startup: true
+  prover_instances: 2
+  prover_parallel_startup: False
   prover_startup_stagger_seconds: 0
   prover_startup_timeout: 1800
   prover_tensor_parallel_size: 1
