@@ -5,7 +5,6 @@
   - 本地 vLLM (vllm.LLM)：进程内加载模型，零 HTTP 开销
   - Sliding-pool batch：成功写入、失败留池、token overflow 跳过，GPU 始终满负载
   - Resume：读取已有输出 JSONL，跳过已完成 record_id
-  - Orphan-drop 兜底：超出 max_retries 后尝试清理孤立节点再接受
   - 独立输出：graphs.jsonl / skipped.jsonl / failed.jsonl
 """
 from __future__ import annotations
@@ -150,7 +149,7 @@ def _build_fdg_payload(
     document: FDGDocument,
     tries: int,
     include_think_in_dag: bool,
-    extraction_response: Optional[str],
+    conversation: List[Dict[str, str]],
     validation_warnings: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     return {
@@ -172,7 +171,7 @@ def _build_fdg_payload(
             "raw_cot": record.raw_cot,
         },
         "extraction": {
-            "raw_response": extraction_response,
+            "conversation": conversation,
         },
         "graph": {
             "facts": [fact.model_dump() for fact in document.facts],
@@ -183,8 +182,13 @@ def _build_fdg_payload(
     }
 
 
-def append_error_to_messages(messages: List[Dict[str, str]], error_msg: str) -> List[Dict[str, str]]:
+def append_error_to_messages(
+    messages: List[Dict[str, str]],
+    assistant_response: str,
+    error_msg: str,
+) -> List[Dict[str, str]]:
     updated = list(messages)
+    updated.append({"role": "assistant", "content": assistant_response or ""})
     updated.append(
         {
             "role": "user",
@@ -421,7 +425,7 @@ def main() -> None:
         if not batch:
             return False
         future = executor.submit(
-            llm_pool[worker_id].generate,
+            llm_pool[worker_id].generate_with_metadata,
             [record.messages for record in batch],
         )
         future_to_batch[future] = (worker_id, batch)
@@ -448,7 +452,7 @@ def main() -> None:
                 for future in done:
                     worker_id, batch = future_to_batch[future]
                     del future_to_batch[future]
-                    contents = future.result()
+                    generations = future.result()
                     completed_batches += 1
                     print(
                         f"\n[worker:{worker_id}] completed batch size={len(batch)} "
@@ -456,28 +460,67 @@ def main() -> None:
                         f"(ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})"
                     )
 
-                    for record, content in zip(batch, contents):
+                    for record, generation in zip(batch, generations):
+                        content = generation.get("text")
 
-                        # ── token overflow ──────────────────────────────────
-                        if content is None:
+                        # ── prompt token overflow ───────────────────────────
+                        if generation.get("prompt_token_overflow"):
                             skipped_f.write(json.dumps({
                                 "record_id": record.record_id,
                                 "source_file": record.source_file,
                                 "source_row_pos": record.source_row_pos,
                                 "fdg_prompt": record.fdg_prompt,
                                 "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
-                                "reason": "token_overflow",
+                                "reason": "prompt_token_overflow",
+                                "prompt_tokens": generation.get("prompt_tokens"),
+                                "token_limit": args.token_limit,
                                 "input": {
                                     "problem": record.problem,
                                     "raw_cot": record.raw_cot,
                                 },
                                 "extraction": {
-                                    "raw_response": None,
+                                    "conversation": list(record.messages),
                                 },
                             }, ensure_ascii=False) + "\n")
                             skipped_f.flush()
                             stats["skipped"] += 1
-                            print(f"  [skip]  {record.record_id} (token overflow)")
+                            print(f"  [skip]  {record.record_id} (prompt token overflow)")
+                            continue
+
+                        if content is None:
+                            content = ""
+                        conversation = list(record.messages) + [{"role": "assistant", "content": content}]
+                        if generation.get("output_truncated"):
+                            error_msg = "output_truncated"
+                            if record.retry_count >= args.max_retries:
+                                failed_f.write(json.dumps({
+                                    "record_id": record.record_id,
+                                    "source_file": record.source_file,
+                                    "source_row_pos": record.source_row_pos,
+                                    "fdg_prompt": record.fdg_prompt,
+                                    "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+                                    "retry_count": record.retry_count,
+                                    "last_error": error_msg,
+                                    "finish_reason": generation.get("finish_reason"),
+                                    "stop_reason": generation.get("stop_reason"),
+                                    "input": {
+                                        "problem": record.problem,
+                                        "raw_cot": record.raw_cot,
+                                    },
+                                    "extraction": {
+                                        "conversation": conversation,
+                                    },
+                                }, ensure_ascii=False) + "\n")
+                                failed_f.flush()
+                                stats["failed"] += 1
+                                print(f"  [fail]  {record.record_id}  (output truncated after {record.retry_count} retries)")
+                                continue
+
+                            record.messages = append_error_to_messages(record.messages, content, error_msg)
+                            record.retry_count += 1
+                            pool.appendleft(record)
+                            stats["retried"] += 1
+                            print(f"  [retry] {record.record_id}  (output truncated; attempt {record.retry_count}/{args.max_retries})")
                             continue
 
                         # ── parse + validate ────────────────────────────────
@@ -489,7 +532,7 @@ def main() -> None:
                                 result.document,
                                 record.retry_count + 1,
                                 args.include_think_in_dag,
-                                content,
+                                conversation,
                                 list((result.report or {}).get("warnings") or []),
                             )
                             graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -498,7 +541,7 @@ def main() -> None:
                             print(f"  [ok]    {record.record_id}  (tries={record.retry_count + 1})")
                             continue
 
-                        # ── max retries reached → orphan-drop fallback ──────
+                        # ── max retries reached ─────────────────────────────
                         if record.retry_count >= args.max_retries:
                             failed_f.write(json.dumps({
                                 "record_id": record.record_id,
@@ -513,7 +556,7 @@ def main() -> None:
                                     "raw_cot": record.raw_cot,
                                 },
                                 "extraction": {
-                                    "raw_response": content,
+                                    "conversation": conversation,
                                 },
                             }, ensure_ascii=False) + "\n")
                             failed_f.flush()
@@ -522,7 +565,7 @@ def main() -> None:
                             continue
 
                         # ── retry: update messages and put back in pool ─────
-                        record.messages = append_error_to_messages(record.messages, result.error_msg)
+                        record.messages = append_error_to_messages(record.messages, content, result.error_msg)
                         record.retry_count += 1
                         pool.appendleft(record)   # retries go to the front
                         stats["retried"] += 1

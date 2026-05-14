@@ -22,7 +22,6 @@ def fdg_empty_formalization(skipped: bool = False) -> JsonDict:
         "lean_pass": False,
         "error_msg": [],
         "tries": 0,
-        "attempt_history": [],
     }
     if skipped:
         payload["lean_pass"] = True
@@ -37,7 +36,6 @@ def fdg_empty_solver(skipped: bool = False) -> JsonDict:
         "lean_verify": False,
         "error_msg": [],
         "tries": 0,
-        "attempt_history": [],
     }
     if skipped:
         payload["skipped"] = True
@@ -213,7 +211,6 @@ def fdg_stage2_checkpoint_payload(record: RecordState) -> JsonDict:
                 "form_retries_used": int(fact.get("form_retries_used", 0)),
                 "formalization": fact.get("formalization") or fdg_empty_formalization(),
                 "form_messages": fact.get("form_messages") or [],
-                "form_attempt_history": fact.get("form_attempt_history") or [],
             }
             for fact_id, fact in record["facts"].items()
         },
@@ -243,7 +240,6 @@ def fdg_stage3_checkpoint_payload(record: RecordState) -> JsonDict:
                 "prove_status": fact.get("prove_status", "skipped"),
                 "prove_retries_used": int(fact.get("prove_retries_used", 0)),
                 "prove_messages": fact.get("prove_messages") or [],
-                "prove_attempt_history": fact.get("prove_attempt_history") or [],
                 "solved_lemma": fact.get("solved_lemma") or fdg_empty_solver(skipped=True),
             }
             for fact_id, fact in record["facts"].items()
@@ -294,7 +290,6 @@ def fresh_fdg_stage2_record_state(raw: JsonDict) -> RecordState:
             {} if root_fact else build_proof_obligation_from_fact(document, fact.fact_id)
         )
         state["form_retries_used"] = 0
-        state["form_attempt_history"] = []
         state["form_messages"] = []
         state["formalization"] = fdg_empty_formalization(skipped=root_fact)
         state["_form_enqueued"] = False
@@ -342,7 +337,6 @@ def fresh_fdg_stage3_record_state(raw: JsonDict) -> RecordState:
     for fact in result_facts:
         state = dict(fact)
         state["prove_retries_used"] = 0
-        state["prove_attempt_history"] = []
         state["prove_messages"] = []
         state["_prove_enqueued"] = False
         if not list(state.get("parent_fact_ids") or []):

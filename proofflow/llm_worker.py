@@ -70,7 +70,7 @@ def _worker_main(
             req_type = request.get("type")
             if req_type == "shutdown":
                 return
-            if req_type != "generate":
+            if req_type not in {"generate", "generate_with_metadata"}:
                 response_queue.put(
                     {
                         "type": "error",
@@ -87,7 +87,10 @@ def _worker_main(
                         f"max_tokens={config.max_tokens}",
                         flush=True,
                     )
-                outputs = manager.batch_generate(request["message_batches"])
+                if req_type == "generate_with_metadata":
+                    outputs = manager.batch_generate_with_metadata(request["message_batches"])
+                else:
+                    outputs = manager.batch_generate(request["message_batches"])
                 if os.getenv("STEP_PROOF_RL_TRACE", "1") != "0":
                     print(
                         f"[{config.name}] vLLM generate done "
@@ -181,12 +184,44 @@ class LLMWorkerClient:
             f"{self.config.name} worker generation failed:\n{response.get('error', response)}"
         )
 
+    def generate_with_metadata(
+        self,
+        message_batches: List[List[Dict[str, str]]],
+        timeout: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        self._request_queue.put(
+            {
+                "type": "generate_with_metadata",
+                "message_batches": message_batches,
+            }
+        )
+        try:
+            response = self._response_queue.get(timeout=timeout) if timeout else self._response_queue.get()
+        except queue.Empty as e:
+            raise RuntimeError(
+                f"{self.config.name} worker timed out waiting for generation results."
+            ) from e
+
+        msg_type = response.get("type")
+        if msg_type == "result":
+            return response["outputs"]
+        raise RuntimeError(
+            f"{self.config.name} worker generation failed:\n{response.get('error', response)}"
+        )
+
     async def generate_async(
         self,
         message_batches: List[List[Dict[str, str]]],
         timeout: Optional[int] = None,
     ) -> List[Optional[str]]:
         return await asyncio.to_thread(self.generate, message_batches, timeout)
+
+    async def generate_with_metadata_async(
+        self,
+        message_batches: List[List[Dict[str, str]]],
+        timeout: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.generate_with_metadata, message_batches, timeout)
 
     def close(self, force: bool = False) -> None:
         if not hasattr(self, "_process") or self._process is None:

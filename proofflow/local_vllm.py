@@ -69,19 +69,57 @@ class LocalLLMManager:
         self,
         message_batches: List[List[Dict[str, str]]],
     ) -> List[Optional[str]]:
+        return [item.get("text") for item in self.batch_generate_with_metadata(message_batches)]
+
+    def batch_generate_with_metadata(
+        self,
+        message_batches: List[List[Dict[str, str]]],
+    ) -> List[Dict[str, Any]]:
         prompts = [self._to_prompt(messages) for messages in message_batches]
-        results: List[Optional[str]] = [None] * len(prompts)
+        results: List[Dict[str, Any]] = []
         valid_indices: List[int] = []
         valid_prompts: List[str] = []
 
         for idx, prompt in enumerate(prompts):
-            if self._token_count(prompt) > self.token_limit:
+            prompt_tokens = self._token_count(prompt)
+            if prompt_tokens > self.token_limit:
+                results.append(
+                    {
+                        "text": None,
+                        "prompt_token_overflow": True,
+                        "output_truncated": False,
+                        "finish_reason": None,
+                        "stop_reason": None,
+                        "prompt_tokens": prompt_tokens,
+                    }
+                )
                 continue
+            results.append(
+                {
+                    "text": None,
+                    "prompt_token_overflow": False,
+                    "output_truncated": False,
+                    "finish_reason": None,
+                    "stop_reason": None,
+                    "prompt_tokens": prompt_tokens,
+                }
+            )
             valid_indices.append(idx)
             valid_prompts.append(prompt)
 
         if valid_prompts:
             outputs = self.llm.generate(valid_prompts, self.sampling_params)
             for out_idx, prompt_idx in enumerate(valid_indices):
-                results[prompt_idx] = outputs[out_idx].outputs[0].text
+                completion = outputs[out_idx].outputs[0]
+                finish_reason = getattr(completion, "finish_reason", None)
+                stop_reason = getattr(completion, "stop_reason", None)
+                reason_text = f"{finish_reason} {stop_reason}".lower()
+                results[prompt_idx].update(
+                    {
+                        "text": completion.text,
+                        "finish_reason": None if finish_reason is None else str(finish_reason),
+                        "stop_reason": None if stop_reason is None else str(stop_reason),
+                        "output_truncated": "length" in reason_text,
+                    }
+                )
         return results

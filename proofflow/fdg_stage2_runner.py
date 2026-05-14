@@ -67,7 +67,7 @@ class FDGStage2Runner:
         )
         self.validation_backpressure_limit = max(1, args.max_pending_validation_batches) * max(1, args.form_batch_size)
         self.validation_backpressure = asyncio.Semaphore(self.validation_backpressure_limit)
-        self.validation_queue: asyncio.Queue[Tuple[Dict[str, Any], Optional[str]]] = asyncio.Queue()
+        self.validation_queue: asyncio.Queue[Tuple[Dict[str, Any], Dict[str, Any]]] = asyncio.Queue()
         self.validation_workers: List[asyncio.Task] = []
         self.running_validation_items = 0
         self.validation_error: Optional[BaseException] = None
@@ -254,9 +254,18 @@ class FDGStage2Runner:
         self.lean_compile_count += 1
         return result
 
-    async def _validate_batch_output(self, task: Dict[str, Any], output: Optional[str]) -> Dict[str, Any]:
-        if output is None:
+    async def _validate_batch_output(self, task: Dict[str, Any], generation: Dict[str, Any]) -> Dict[str, Any]:
+        if generation.get("prompt_token_overflow"):
             return {"kind": "token_overflow", "error_msg": "token_overflow", "lean_code": ""}
+        output = generation.get("text") or ""
+        if generation.get("output_truncated"):
+            return {
+                "kind": "output_truncated",
+                "error_msg": "output_truncated",
+                "lean_code": "",
+                "finish_reason": generation.get("finish_reason"),
+                "stop_reason": generation.get("stop_reason"),
+            }
         try:
             lean_code = extract_last_lean_block(output)
         except ValueError as exc:
@@ -319,29 +328,27 @@ class FDGStage2Runner:
                 )
         return tasks
 
-    async def _generate_outputs(self, worker_id: int, tasks: List[Dict[str, Any]]) -> List[Optional[str]]:
+    async def _generate_outputs(self, worker_id: int, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         assert self.formalizers is not None
         return await asyncio.to_thread(
-            self.formalizers[worker_id].generate,
+            self.formalizers[worker_id].generate_with_metadata,
             [task["messages"] for task in tasks],
         )
 
-    async def _validate_and_apply_one_output(self, task: Dict[str, Any], output: Optional[str]) -> None:
-        result = await self._validate_batch_output(task, output)
+    async def _validate_and_apply_one_output(self, task: Dict[str, Any], generation: Dict[str, Any]) -> None:
+        result = await self._validate_batch_output(task, generation)
         async with self.state_lock:
             record = self.records[task["record_id"]]
             fact = record["facts"][task["fact_id"]]
             attempt_num = task["attempt_num"]
-            history = list(fact.get("form_attempt_history") or [])
             conversation = copy.deepcopy(task["messages"])
-            conversation.append({"role": "assistant", "content": output or ""})
+            conversation.append({"role": "assistant", "content": generation.get("text") or ""})
             if result["kind"] == "validated":
                 payload = {
                     "lean_code": result["lean_code"],
                     "lean_pass": bool(result["lean_pass"]),
                     "error_msg": [] if result["lean_pass"] else result["error_msg"],
                     "tries": attempt_num,
-                    "attempt_history": history,
                     "conversation": conversation,
                 }
                 success = bool(result["lean_pass"])
@@ -352,7 +359,6 @@ class FDGStage2Runner:
                     "lean_pass": False,
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
-                    "attempt_history": history,
                     "conversation": conversation,
                 }
                 success = False
@@ -362,11 +368,11 @@ class FDGStage2Runner:
             fact["formalization"] = payload
             if success:
                 fact["form_status"] = "success"
-            elif result["kind"] == "token_overflow" or attempt_num >= self.args.formalizer_retries:
+            elif result["kind"] == "token_overflow" or attempt_num > self.args.formalizer_retries:
                 fact["form_status"] = "failed"
             else:
-                fact["form_attempt_history"] = history + [payload]
                 fact["form_status"] = "pending"
+                fact["form_messages"] = conversation
                 fact["form_messages"].append(
                     {
                         "role": "user",
@@ -380,10 +386,10 @@ class FDGStage2Runner:
         tasks = await self._prepare_batch(batch_items)
         if not tasks:
             return
-        outputs = await self._generate_outputs(worker_id, tasks)
-        for task, output in zip(tasks, outputs):
+        generations = await self._generate_outputs(worker_id, tasks)
+        for task, generation in zip(tasks, generations):
             await self.validation_backpressure.acquire()
-            await self.validation_queue.put((task, output))
+            await self.validation_queue.put((task, generation))
 
     def _raise_validation_error(self) -> None:
         if self.validation_error is not None:
@@ -586,7 +592,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="formalize_obligation",
         help="Formalizer prompt file stem under prompts/{system,user}.",
     )
-    parser.add_argument("--formalizer-retries", type=int, default=3)
+    parser.add_argument(
+        "--formalizer-retries",
+        type=int,
+        default=3,
+        help="Maximum retry rounds after the initial formalizer attempt.",
+    )
     parser.add_argument("--form-batch-size", type=int, default=64)
     parser.add_argument(
         "--metrics-out",
