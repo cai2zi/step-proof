@@ -295,6 +295,7 @@ class Stage1APIClient:
             client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
+                max_retries=0,
             )
             self._local.client = client
         return client
@@ -415,6 +416,12 @@ class Stage1APIClient:
                         break
                     time.sleep(self.retry_sleep * (attempt + 1))
         return results
+
+    def generate_one_with_metadata(
+        self,
+        messages: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        return self.generate_with_metadata([messages])[0]
 
     def close(self, force: bool = False) -> None:
         client = getattr(self._local, "client", None)
@@ -601,7 +608,8 @@ def main() -> None:
         raise SystemExit("--vllm-instances/--api-concurrency must be >= 1")
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be >= 1")
-    refill_target = worker_count * args.batch_size
+    effective_batch_size = args.batch_size if args.backend == "vllm" else 1
+    refill_target = worker_count * effective_batch_size
 
     def refill_pool() -> None:
         while len(pool) < refill_target:
@@ -663,7 +671,7 @@ def main() -> None:
         print(
             f"[init] using API backend model={args.api_model} "
             f"base_url={args.api_base_url} concurrency={args.api_concurrency} "
-            f"input_token_limit={input_token_limit}"
+            f"input_token_limit={input_token_limit} effective_batch_size={effective_batch_size}"
         )
         llm_pool = [
             Stage1APIClient(
@@ -688,7 +696,7 @@ def main() -> None:
 
     def next_batch() -> List[PendingRecord]:
         batch: List[PendingRecord] = []
-        while len(batch) < args.batch_size and pool:
+        while len(batch) < effective_batch_size and pool:
             batch.append(pool.popleft())
         return batch
 
@@ -701,12 +709,22 @@ def main() -> None:
         batch = next_batch()
         if not batch:
             return False
-        future = executor.submit(
-            llm_pool[worker_id].generate_with_metadata,
-            [record.messages for record in batch],
-        )
+        if args.backend == "api":
+            record = batch[0]
+            future = executor.submit(
+                llm_pool[worker_id].generate_one_with_metadata,
+                record.messages,
+            )
+        else:
+            future = executor.submit(
+                llm_pool[worker_id].generate_with_metadata,
+                [record.messages for record in batch],
+            )
         future_to_batch[future] = (worker_id, batch)
-        print(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
+        if args.backend == "api":
+            print(f"  [worker:{worker_id}] dispatched record={batch[0].record_id}")
+        else:
+            print(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
         return True
 
     try:
@@ -729,7 +747,8 @@ def main() -> None:
                 for future in done:
                     worker_id, batch = future_to_batch[future]
                     del future_to_batch[future]
-                    generations = future.result()
+                    future_result = future.result()
+                    generations = [future_result] if args.backend == "api" else future_result
                     completed_batches += 1
                     print(
                         f"\n[worker:{worker_id}] completed batch size={len(batch)} "
