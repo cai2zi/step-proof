@@ -1,6 +1,10 @@
+output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+name: fdg_bug
+rollout_name: qwen3_8b
+
 exp:
-  name: rollout_rerank_step_proof
-  root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs/test/step_proof_results
+  name: step_proof_results
+  root: ${output_root}/step_proofs/step_proof_${name}
 
 python: ${oc.env:PYTHON,/root/autodl-tmp/env/lean4/bin/python}
 
@@ -11,8 +15,8 @@ run:
   stream_logs_to_console: true
 
 stage1:
-  parquet_dir: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs/test/step_proof/input
-  parquet_glob: "*.parquet"
+  parquet_dir: ${output_root}/rollouts/rollout_${rollout_name}
+  parquet_glob: rollout_flat.parquet
   id_column: id
   question_column: question
   response_column: response

@@ -8,7 +8,15 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from common import exp_dir, load_config, read_jsonl, split_rollout_id, write_jsonl
+from common import (
+    load_config,
+    read_jsonl,
+    split_rollout_id,
+    step_proof_dir,
+    step_proof_results_dir,
+    step_proof_rollout_dir,
+    write_jsonl,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,10 +65,9 @@ def _sort_key(row: Dict[str, Any]) -> tuple:
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
-    root = exp_dir(cfg)
-    flat_path = root / "step_proof" / "input" / "rollout_flat.parquet"
-    stage3_path = root / "step_proof_results" / "fdg" / "result_stage3" / "stage3_results.jsonl"
-    out_dir = root / "step_proof"
+    flat_path = step_proof_rollout_dir(cfg) / "rollout_flat.parquet"
+    stage3_path = step_proof_results_dir(cfg) / "result_stage3" / "stage3_results.jsonl"
+    out_dir = step_proof_dir(cfg)
     scores_path = out_dir / "scores.jsonl"
     selected_path = out_dir / "selected_step_proof.jsonl"
 

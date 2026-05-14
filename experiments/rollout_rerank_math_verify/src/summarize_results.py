@@ -9,7 +9,7 @@ from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any, Dict, List
 
-from common import exp_dir, load_config
+from common import load_config, math_verify_dir, summary_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +63,22 @@ def _is_rollout_one(row: Dict[str, str]) -> bool:
         except ValueError:
             pass
     return False
+
+
+def _rollout_id(row: Dict[str, str]) -> int | None:
+    rid = row.get("rollout_id")
+    if rid is not None and str(rid).strip() != "":
+        try:
+            return int(rid)
+        except (TypeError, ValueError):
+            pass
+    lid = row.get("id", "")
+    if "__rollout_" in lid:
+        try:
+            return int(lid.rsplit("__rollout_", 1)[-1])
+        except ValueError:
+            pass
+    return None
 
 
 def _write_metrics_csv(
@@ -160,10 +176,9 @@ def _write_metrics_csv(
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
-    root = exp_dir(cfg)
-    mv_dir = root / "math_verify"
-    summary_dir = root / "summary"
-    summary_dir.mkdir(parents=True, exist_ok=True)
+    mv_dir = math_verify_dir(cfg)
+    out_summary_dir = summary_dir(cfg)
+    out_summary_dir.mkdir(parents=True, exist_ok=True)
 
     random_metrics = []
     for seed in cfg["math_verify"].get("random_seeds", [0, 1, 2]):
@@ -188,7 +203,8 @@ def main() -> None:
             parent_source[parent_id] = row.get("source", "") or ""
 
     step_by_parent = {row.get("parent_id") or row["id"]: row for row in step_rows}
-    k = int(((cfg.get("rollout") or {}).get("n")) or 0)
+    rollout_ids = [_rollout_id(row) for row in all_rows]
+    k = max([rid for rid in rollout_ids if rid is not None], default=0)
     pass_at_k_total = len(pass_at_k_by_parent)
     pass_at_k_correct = sum(1 for value in pass_at_k_by_parent.values() if value)
     pass_at_k_accuracy = pass_at_k_correct / pass_at_k_total if pass_at_k_total else math.nan
@@ -229,10 +245,10 @@ def main() -> None:
         },
     }
 
-    metrics_path = summary_dir / "metrics.json"
+    metrics_path = out_summary_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _write_metrics_csv(
-        out_path=summary_dir / "metrics.csv",
+        out_path=out_summary_dir / "metrics.csv",
         metrics=metrics,
         pass_at_k_key=pass_at_k_key,
     )

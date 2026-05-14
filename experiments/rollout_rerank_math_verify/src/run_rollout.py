@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from common import exp_dir, load_config, read_done_ids
+from common import load_config, read_done_ids, rollout_dir
 from proofflow.llm_worker import split_gpu_groups
 
 
@@ -194,6 +194,8 @@ class RolloutWorkerClient:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run rollout@N with one vLLM per GPU group.")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--limit-per-source", type=int, default=None)
+    parser.add_argument("--limit-total", type=int, default=None)
     return parser.parse_args()
 
 
@@ -203,6 +205,103 @@ def _make_messages(question: str, template: str) -> List[Dict[str, str]]:
 
 def _chunks(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
     return [items[start : start + size] for start in range(0, len(items), size)]
+
+
+def _load_bench(cfg: Dict[str, Any], args: argparse.Namespace) -> pd.DataFrame:
+    data_cfg = cfg["data"]
+    bench_path = Path(data_cfg["bench_path"])
+    if bench_path.suffix == ".parquet":
+        df = pd.read_parquet(bench_path)
+    elif bench_path.suffix == ".jsonl":
+        df = pd.read_json(bench_path, lines=True)
+    else:
+        raise SystemExit(f"unsupported bench file: {bench_path}")
+
+    columns = {
+        "id": data_cfg.get("id_column", "id"),
+        "source": data_cfg.get("source_column", "source"),
+        "question": data_cfg.get("question_column", "question"),
+        "gold": data_cfg.get("gold_column", "gold"),
+    }
+    missing = [col for col in columns.values() if col not in df.columns]
+    if missing:
+        raise SystemExit(f"missing required column(s): {missing}")
+
+    df = df.rename(columns={v: k for k, v in columns.items()})
+    df = df[["id", "source", "question", "gold"]].copy()
+    df = df.dropna(subset=["id", "source", "question", "gold"])
+    df["id"] = df["id"].astype(str)
+    df["source"] = df["source"].astype(str)
+    df["question"] = df["question"].astype(str)
+    df["gold"] = df["gold"].astype(str)
+
+    sources = data_cfg.get("sources")
+    if sources:
+        available_sources = set(df["source"].unique().tolist())
+        requested_sources = set(str(source) for source in sources)
+        unknown_sources = sorted(requested_sources - available_sources)
+        if unknown_sources:
+            available = ", ".join(sorted(available_sources))
+            raise SystemExit(
+                f"unknown data.sources value(s): {unknown_sources}. "
+                f"Available sources: {available}"
+            )
+        df = df[df["source"].isin(sources)]
+        if df.empty:
+            raise SystemExit(f"data.sources selected no records: {sources}")
+
+    seed = int(data_cfg.get("seed", 42))
+    limit_per_source = (
+        args.limit_per_source
+        if args.limit_per_source is not None
+        else data_cfg.get("limit_per_source")
+    )
+    if limit_per_source:
+        parts = []
+        for _, group in df.groupby("source", sort=True):
+            parts.append(
+                group.sample(
+                    n=min(int(limit_per_source), len(group)),
+                    random_state=seed,
+                )
+            )
+        df = pd.concat(parts, ignore_index=True)
+
+    if args.limit_total:
+        df = df.sample(n=min(args.limit_total, len(df)), random_state=seed)
+
+    return df.sort_values(["source", "id"]).reset_index(drop=True)
+
+
+def _write_manifest(out_dir: Path, cfg: Dict[str, Any], df: pd.DataFrame) -> None:
+    data_cfg = cfg["data"]
+    manifest = {
+        "name": cfg["name"],
+        "bench_path": str(data_cfg["bench_path"]),
+        "total": int(len(df)),
+        "sources": {str(k): int(v) for k, v in df["source"].value_counts().sort_index().items()},
+        "data": {
+            "id_column": data_cfg.get("id_column", "id"),
+            "source_column": data_cfg.get("source_column", "source"),
+            "question_column": data_cfg.get("question_column", "question"),
+            "gold_column": data_cfg.get("gold_column", "gold"),
+            "limit_per_source": data_cfg.get("limit_per_source"),
+            "sources": data_cfg.get("sources"),
+            "seed": data_cfg.get("seed", 42),
+        },
+        "rollout": {
+            "model_path": cfg["rollout"].get("model_path"),
+            "n": cfg["rollout"].get("n"),
+            "temperature": cfg["rollout"].get("temperature"),
+            "top_p": cfg["rollout"].get("top_p"),
+            "top_k": cfg["rollout"].get("top_k"),
+            "seed": cfg["rollout"].get("seed"),
+        },
+    }
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _build_worker_config(
@@ -277,12 +376,12 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     rollout_cfg = cfg["rollout"]
-    out_dir = exp_dir(cfg) / "rollout"
+    out_dir = rollout_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
-    input_path = exp_dir(cfg) / "input" / "bench.parquet"
     output_path = out_dir / "rollout_raw.jsonl"
 
-    df = pd.read_parquet(input_path)
+    df = _load_bench(cfg, args)
+    _write_manifest(out_dir, cfg, df)
     done_ids = read_done_ids(output_path) if rollout_cfg.get("resume", True) else set()
     if done_ids:
         df = df[~df["id"].astype(str).isin(done_ids)]

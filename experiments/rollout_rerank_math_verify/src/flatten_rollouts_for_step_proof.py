@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from common import exp_dir, load_config, read_jsonl, rollout_record_id, rollout_response_key
+from common import load_config, read_jsonl, rollout_dir, rollout_record_id, rollout_response_key
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,9 +20,8 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     n = int(cfg["rollout"]["n"])
-    root = exp_dir(cfg)
-    rollout_path = root / "rollout" / "rollout_raw.jsonl"
-    out_dir = root / "step_proof" / "input"
+    out_dir = rollout_dir(cfg)
+    rollout_path = out_dir / "rollout_raw.jsonl"
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / "rollout_flat.jsonl"
     parquet_path = out_dir / "rollout_flat.parquet"

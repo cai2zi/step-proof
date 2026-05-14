@@ -17,7 +17,43 @@ def load_config(path: str | Path) -> Dict[str, Any]:
 
 
 def exp_dir(cfg: Dict[str, Any]) -> Path:
-    return Path(cfg["output_root"]) / str(cfg["exp_name"])
+    return Path(cfg["output_root"])
+
+
+def _named_dir(prefix: str, name: str) -> str:
+    return name if name.startswith(f"{prefix}_") else f"{prefix}_{name}"
+
+
+def rollout_name(cfg: Dict[str, Any]) -> str:
+    return str(cfg.get("rollout_name") or cfg["name"])
+
+
+def rollout_dir(cfg: Dict[str, Any]) -> Path:
+    return exp_dir(cfg) / "rollouts" / _named_dir("rollout", rollout_name(cfg))
+
+
+def step_proof_name(cfg: Dict[str, Any]) -> str:
+    return str(cfg.get("step_proof_name") or cfg["name"])
+
+
+def step_proof_rollout_dir(cfg: Dict[str, Any]) -> Path:
+    return exp_dir(cfg) / "rollouts" / _named_dir("rollout", rollout_name(cfg))
+
+
+def step_proof_dir(cfg: Dict[str, Any]) -> Path:
+    return exp_dir(cfg) / "step_proofs" / _named_dir("step_proof", step_proof_name(cfg))
+
+
+def step_proof_results_dir(cfg: Dict[str, Any]) -> Path:
+    return step_proof_dir(cfg) / "step_proof_results"
+
+
+def math_verify_dir(cfg: Dict[str, Any]) -> Path:
+    return step_proof_dir(cfg) / "math_verify"
+
+
+def summary_dir(cfg: Dict[str, Any]) -> Path:
+    return step_proof_dir(cfg) / "summary"
 
 
 def read_jsonl(path: str | Path) -> Iterable[Dict[str, Any]]:

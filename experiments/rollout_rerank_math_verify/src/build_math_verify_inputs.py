@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from common import exp_dir, load_config, read_jsonl, rollout_response_key
+from common import load_config, math_verify_dir, read_jsonl, step_proof_dir, step_proof_rollout_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,19 +24,28 @@ def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _rollout_responses(rec: Dict[str, Any]) -> List[tuple[int, Any]]:
+    responses = []
+    for key, value in rec.items():
+        if not key.startswith("response_"):
+            continue
+        suffix = key.rsplit("_", 1)[-1]
+        if not suffix.isdigit():
+            continue
+        responses.append((int(suffix), value))
+    return sorted(responses)
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
-    root = exp_dir(cfg)
-    n = int(cfg["rollout"]["n"])
-    out_dir = root / "math_verify"
-    rollout_raw = list(read_jsonl(root / "rollout" / "rollout_raw.jsonl"))
-    selected = list(read_jsonl(root / "step_proof" / "selected_step_proof.jsonl"))
+    out_dir = math_verify_dir(cfg)
+    rollout_raw = list(read_jsonl(step_proof_rollout_dir(cfg) / "rollout_raw.jsonl"))
+    selected = list(read_jsonl(step_proof_dir(cfg) / "selected_step_proof.jsonl"))
 
     all_rollout_rows: List[Dict[str, Any]] = []
     for rec in rollout_raw:
-        for rollout_id in range(1, n + 1):
-            response = rec.get(rollout_response_key(rollout_id))
+        for rollout_id, response in _rollout_responses(rec):
             if response is None or not str(response).strip():
                 continue
             all_rollout_rows.append(

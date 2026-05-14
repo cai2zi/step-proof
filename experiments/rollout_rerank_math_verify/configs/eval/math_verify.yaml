@@ -1,0 +1,11 @@
+output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+name: math_verify
+step_proof_name: fdg_bug
+rollout_name: qwen3_8b
+
+env:
+  lean4_python: /root/autodl-tmp/env/lean4/bin/python
+  eval_python: /root/autodl-tmp/env/eval/bin/python
+
+math_verify:
+  random_seeds: [0, 1, 2]

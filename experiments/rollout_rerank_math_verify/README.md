@@ -4,12 +4,9 @@ This experiment tests whether step-proof reranking improves final-answer accurac
 
 Pipeline:
 
-1. Prepare a bench subset from `bench_all_normalized`.
-2. Generate `n=4` rollouts with 8 single-GPU vLLM workers.
-3. Flatten rollouts and run the three FDG step-proof stages.
-4. Score each rollout by proved node count and select the best per problem.
-5. Build random and step-proof Math-Verify JSONLs.
-6. Evaluate with Math-Verify and summarize random, step-proof, and pass@k accuracy.
+1. Generate `n=4` rollouts with 8 single-GPU vLLM workers directly from `bench_path`.
+2. Flatten rollouts and run the three FDG step-proof stages.
+3. Score each rollout by proved node count, build Math-Verify inputs, evaluate, and summarize random, step-proof, and pass@k accuracy.
 
 Default environments:
 
@@ -21,36 +18,24 @@ Default environments:
 From `/root/autodl-tmp/step-proof`:
 
 ```bash
-CONFIG=experiments/rollout_rerank_math_verify/configs/experiment.yaml
-
-/root/autodl-tmp/env/lean4/bin/python \
-  experiments/rollout_rerank_math_verify/scripts/00_prepare_input.py \
-  --config "$CONFIG"
-
-bash experiments/rollout_rerank_math_verify/scripts/01_run_rollout.sh "$CONFIG"
-
-/root/autodl-tmp/env/lean4/bin/python \
-  experiments/rollout_rerank_math_verify/scripts/02_flatten_rollouts_for_step_proof.py \
-  --config "$CONFIG"
-
-bash experiments/rollout_rerank_math_verify/scripts/03_run_step_proof.sh "$CONFIG"
-
-/root/autodl-tmp/env/lean4/bin/python \
-  experiments/rollout_rerank_math_verify/scripts/04_score_step_proof.py \
-  --config "$CONFIG"
-
-/root/autodl-tmp/env/lean4/bin/python \
-  experiments/rollout_rerank_math_verify/scripts/05_build_math_verify_inputs.py \
-  --config "$CONFIG"
-
-bash experiments/rollout_rerank_math_verify/scripts/06_run_math_verify.sh "$CONFIG"
-
-/root/autodl-tmp/env/lean4/bin/python \
-  experiments/rollout_rerank_math_verify/scripts/07_summarize_results.py \
-  --config "$CONFIG"
+bash experiments/rollout_rerank_math_verify/scripts/run_all.sh default
 ```
 
-Default config is a smoke run with `limit_per_source: 10`. Set it to `null` for full data.
+The three stages can also be run independently:
+
+```bash
+bash experiments/rollout_rerank_math_verify/scripts/01_rollout.sh qwen3_8b
+bash experiments/rollout_rerank_math_verify/scripts/02_step_proof.sh fdg_bug
+bash experiments/rollout_rerank_math_verify/scripts/03_eval.sh math_verify
+```
+
+The pipeline config only selects stage configs:
+
+```yaml
+rollout_config: qwen3_8b
+step_proof_config: fdg_bug
+eval_config: math_verify
+```
 
 Rollout uses one vLLM process per GPU by default. Worker startup and scheduling are controlled by:
 
@@ -65,7 +50,7 @@ rollout:
 
 With `parallel_startup: true`, all vLLM worker processes are started first and then waited on for readiness. During inference, batches are scheduled dynamically: when a worker finishes its current micro-batch, it immediately receives the next pending micro-batch.
 
-To evaluate only selected benches, edit `data.sources` in `configs/experiment.yaml`:
+To evaluate only selected benches, edit `data.sources` in `configs/rollout/qwen3_8b.yaml`:
 
 ```yaml
 data:
@@ -91,15 +76,15 @@ omni_math_test
 
 ## Key Outputs
 
-Under `outputs/${exp_name}`:
+Under `outputs`:
 
-- `input/bench.parquet`
-- `rollout/rollout_raw.jsonl`
-- `step_proof/input/rollout_flat.parquet`
-- `step_proof_results/fdg/result_stage3/stage3_results.jsonl`
-- `step_proof/scores.jsonl`
-- `step_proof/selected_step_proof.jsonl`
-- `math_verify/random_seed_*_eval.jsonl`
-- `math_verify/step_proof_best_eval.jsonl`
-- `math_verify/all_rollouts_eval.jsonl`
-- `summary/metrics.json`
+- `rollouts/rollout_qwen3_8b/rollout_raw.jsonl`
+- `rollouts/rollout_qwen3_8b/rollout_flat.parquet`
+- `rollouts/rollout_qwen3_8b/manifest.json`
+- `step_proofs/step_proof_fdg_bug/step_proof_results/result_stage3/stage3_results.jsonl`
+- `step_proofs/step_proof_fdg_bug/scores.jsonl`
+- `step_proofs/step_proof_fdg_bug/selected_step_proof.jsonl`
+- `step_proofs/step_proof_fdg_bug/math_verify/random_seed_*_eval.jsonl`
+- `step_proofs/step_proof_fdg_bug/math_verify/step_proof_best_eval.jsonl`
+- `step_proofs/step_proof_fdg_bug/math_verify/all_rollouts_eval.jsonl`
+- `step_proofs/step_proof_fdg_bug/summary/metrics.json`

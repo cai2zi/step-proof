@@ -1,9 +1,8 @@
-exp_name: test
 output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+name: qwen3_8b
 
 env:
   lean4_python: /root/autodl-tmp/env/lean4/bin/python
-  eval_python: /root/autodl-tmp/env/eval/bin/python
 
 data:
   bench_path: /root/autodl-tmp/data_raw/bench/bench_all_normalized.parquet
@@ -12,17 +11,6 @@ data:
   gold_column: gold
   source_column: source
   limit_per_source: null
-  # Set to null to evaluate all sources. Otherwise list the bench sources to keep.
-  # Available sources:
-    # - aime25_test
-    # - aime_2024
-    # - brumo_2025
-    # - cmimc_2025
-    # - hmmt_feb_2025
-    # - math_500_test
-    # - gsm8k_main_test
-    # - olympiadbench_oe_to_maths_en_comp
-    # - omni_math_test
   sources:
     - aime25_test
     - aime_2024
@@ -31,8 +19,6 @@ data:
     - hmmt_feb_2025
     - math_500_test
     - gsm8k_main_test
-    # - olympiadbench_oe_to_maths_en_comp
-    # - omni_math_test
   seed: 42
 
 prompt:
@@ -64,6 +50,3 @@ rollout:
   startup_stagger_seconds: 0
   chat_template_kwargs:
     enable_thinking: true
-
-math_verify:
-  random_seeds: [0, 1, 2]
