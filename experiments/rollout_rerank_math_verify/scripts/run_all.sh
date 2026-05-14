@@ -44,17 +44,23 @@ print(cfg["step_proof_config"])
 print(cfg["eval_config"])
 print(cfg["rollout_name"])
 print(cfg["step_proof_name"])
+print(cfg.get("stage1_backend", "vllm"))
 PY
 )
 
+
+export DASHSCOPE_API_KEY="sk-d4467529589744a390ca540fcb9f6013"
+
+
 ROLLOUT_NAME="${STAGE_CONFIGS[3]}"
 STEP_PROOF_NAME="${STAGE_CONFIGS[4]}"
-
+STAGE1_BACKEND="${STAGE_CONFIGS[5]}"
 bash "${SCRIPT_DIR}/01_rollout.sh" "${STAGE_CONFIGS[0]}" \
   "name=${ROLLOUT_NAME}"
 bash "${SCRIPT_DIR}/02_step_proof.sh" "${STAGE_CONFIGS[1]}" \
   "rollout_name=${ROLLOUT_NAME}" \
-  "name=${STEP_PROOF_NAME}"
+  "name=${STEP_PROOF_NAME}" \
+  "stage1.backend=${STAGE1_BACKEND}"
 bash "${SCRIPT_DIR}/03_eval.sh" "${STAGE_CONFIGS[2]}" \
   "rollout_name=${ROLLOUT_NAME}" \
   "step_proof_name=${STEP_PROOF_NAME}"

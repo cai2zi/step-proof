@@ -846,7 +846,7 @@ def main() -> None:
 
                         # ── parse + validate ────────────────────────────────
                         result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
-
+                        import pdb; pdb.set_trace()
                         if result.ok:
                             payload = _build_fdg_payload(
                                 record,

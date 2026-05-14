@@ -40,15 +40,15 @@ stage1:
 
   # API backend settings. OpenAI/ChatGPT:
   #   api_base_url: https://api.openai.com/v1
-  #   api_key_env: OPENAI_API_KEY
+  #   api_key_env: OPENAI_API_KEY   # 此处填「环境变量名」；密钥 export 到该变量，勿把密钥写进 yaml
   # Qwen compatible mode:
   #   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  #   api_key_env: MiUGgRpEo2a5G1OTk2VqxngYQx1bnu
+  #   api_key_env: DASHSCOPE_API_KEY
   api_model: qwen3.5-27b
-  api_base_url: https://api.openai.com/v1
-  api_key_env: OPENAI_API_KEY
+  api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: DASHSCOPE_API_KEY
   api_concurrency: 8
-  api_timeout: 120
+  api_timeout: 30
   api_max_retries: 3
   api_retry_sleep: 2.0
   api_input_token_limit: 32768
@@ -70,7 +70,7 @@ stage1:
 lean_runtime:
   mathlib_path: /root/autodl-tmp/mathlib4
   lean_backend: persistent_lsp
-  lean_check_concurrency: 128
+  lean_check_concurrency: 64
   lean_worker_pool_size: 0
   lean_temp_dir: lean_jobs_shared
 

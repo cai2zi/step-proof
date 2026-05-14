@@ -3,4 +3,5 @@ step_proof_config: fdg_bug
 eval_config: math_verify
 
 rollout_name: qwen3_8b_8
-step_proof_name: reduce_prompt
+step_proof_name: debug_api_8
+stage1_backend: api
