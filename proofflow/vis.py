@@ -6,6 +6,7 @@ import webbrowser
 import matplotlib.pyplot as plt
 import networkx as nx
 
+from .fdg_graph import ORIGIN4_FDG_ORIGINS
 from .graph_mode import item_dependencies, item_id
 
 
@@ -46,7 +47,13 @@ def build_dag(data):
             continue  # Skip items without ID
 
         if "fact_id" in node_dict:
-            item_type = "solution" if node_dict.get("is_final_answer") else "fact"
+            og = str(node_dict.get("origin") or "").strip().lower()
+            if og in ORIGIN4_FDG_ORIGINS:
+                item_type = og
+            elif node_dict.get("is_final_answer"):
+                item_type = "solution"
+            else:
+                item_type = "fact"
         else:
             item_type = "unknown"
         
@@ -176,8 +183,24 @@ def create_interactive_visualization(
             elif info.get('formalization', {}).get('lean_pass', False):
                 contour_color = '#FFA500'  # Orange
         
-        # Set node properties based on type
-        if node_type == 'condition':
+        # Node fill / shape: fdg_origin4 first, then legacy graph types
+        if node_type == 'given':
+            color = '#e8e4dc'
+            shape = 'box'
+            size = 28
+        elif node_type == 'introduced':
+            color = '#e8dff5'
+            shape = 'diamond'
+            size = 30
+        elif node_type == 'derived':
+            color = '#d7e6f5'
+            shape = 'dot'
+            size = 26
+        elif node_type == 'answer':
+            color = '#a3c2a8'
+            shape = 'star'
+            size = 38
+        elif node_type == 'condition':
             color = '#eba0a0'
             shape = 'box'
             size = 30
@@ -625,28 +648,27 @@ def create_interactive_visualization(
                     <button id="toggle-panel" onclick="togglePanel()">Toggle Info Panel</button>
                     <div class="legend">
                         <div class="legend-section">
-                            <div class="legend-title">Node Types</div>
+                            <div class="legend-title">fdg_origin4（节点 origin）</div>
                             <div class="legend-item">
-                                <div class="legend-color" style="background: #eba0a0;"></div>
-                                <span>Theorem Conditions (tc)</span>
+                                <div class="legend-color" style="background: #e8e4dc;"></div>
+                                <span>given</span>
                             </div>
                             <div class="legend-item">
-                                <div class="legend-color" style="background: #cfb795 ;"></div>
-                                <span>Theorem Definitions (def)</span>
-                            </div>
-                            <div class="legend-item">
-                                <div class="legend-color" style="background: #8dafcc;"></div>
-                                <span>Lemmas (l)</span>
+                                <div class="legend-color" style="background: #e8dff5;"></div>
+                                <span>introduced</span>
                             </div>
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #d7e6f5;"></div>
-                                <span>Facts (fdg)</span>
+                                <span>derived</span>
                             </div>
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #a3c2a8;"></div>
-                                <span>Theorem Solutions (ts)</span>
+                                <span>answer</span>
                             </div>
-
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: #7fa8c9;"></div>
+                                <span>其它 / 无 origin（回退）</span>
+                            </div>
                         </div>
                         <div class="legend-section">
                             <div class="legend-title">Verification Status</div>
@@ -860,17 +882,30 @@ def create_interactive_visualization(
                             return;
                         }}
                         var html = '<div class="info-header">';
-                        html += '<h2>' + nodeId + '</h2>';
-                        var nodeType = info.type || 'unknown';
-                        var capitalizedType = nodeType.charAt(0).toUpperCase() +
-                            nodeType.slice(1);
-                        html += '<div class="node-type">Type: ' + capitalizedType +
-                            '</div>';
+                        html += '<h2>' + escapeHtml(nodeId) + '</h2>';
+                        var og = (info.origin || '').toString().trim().toLowerCase();
+                        var origin4 = ['given', 'introduced', 'derived', 'answer'];
+                        if (og && origin4.indexOf(og) >= 0) {{
+                            html += '<div class="node-type">fdg_origin4: ' + escapeHtml(og) + '</div>';
+                        }} else {{
+                            var nodeType = info.type || 'unknown';
+                            html += '<div class="node-type">Type: ' + escapeHtml(nodeType) + '</div>';
+                        }}
+                        if (info.is_final_answer) {{
+                            html += '<div class="node-type" style="font-size:12px;opacity:0.9">is_final_answer</div>';
+                        }}
                         html += '</div>';
                         
-                        // Add all fields
+                        var skipFdgLegacy = {{}};
+                        if (info.fact_id) {{
+                            skipFdgLegacy.natural_language = true;
+                            skipFdgLegacy.statement = true;
+                            skipFdgLegacy.node_type = true;
+                            skipFdgLegacy.dependencies = true;
+                        }}
                         for (var key in info) {{
                             if (key === 'type' || key === 'id') continue;
+                            if (skipFdgLegacy[key]) continue;
                             
                             var fieldName = key.replace(/_/g, ' ')
                                 .replace(/\\b\\w/g, function(l) {{
@@ -881,8 +916,7 @@ def create_interactive_visualization(
                             if (fieldValue && fieldValue !== 'N/A') {{
                                 // Special formatting for code fields
                                 var isCode = key.includes('code') ||
-                                    key.includes('lean') ||
-                                    key.includes('statement');
+                                    key.includes('lean');
                                 
                                 html += '<div class="field-group">';
                                 html += '<div class="field-name">' + fieldName +
@@ -1054,7 +1088,19 @@ def create_interactive_graph_only_visualization(
     for node in G.nodes():
         info = node_info[node]
         node_type = info.get("type", "unknown")
-        if node_type == "condition":
+        if node_type == "given":
+            color = "#e8e4dc"
+            shape = "box"
+        elif node_type == "introduced":
+            color = "#e8dff5"
+            shape = "diamond"
+        elif node_type == "derived":
+            color = "#d7e6f5"
+            shape = "dot"
+        elif node_type == "answer":
+            color = "#a3c2a8"
+            shape = "star"
+        elif node_type == "condition":
             color = "#eba0a0"
             shape = "box"
         elif node_type == "solution":
@@ -1124,11 +1170,11 @@ def create_interactive_graph_only_visualization(
   <div class="wrap">
     <div class="left">
       <div class="legend">
-        <div class="item"><span class="dot" style="background:#eba0a0"></span>problem condition</div>
-        <div class="item"><span class="dot" style="background:#cfb795"></span>context</div>
-        <div class="item"><span class="dot" style="background:#8dafcc"></span>claim</div>
-        <div class="item"><span class="dot" style="background:#d7e6f5"></span>fact</div>
-        <div class="item"><span class="dot" style="background:#a3c2a8"></span>final answer</div>
+        <div class="item"><span class="dot" style="background:#e8e4dc"></span>given</div>
+        <div class="item"><span class="dot" style="background:#e8dff5"></span>introduced</div>
+        <div class="item"><span class="dot" style="background:#d7e6f5"></span>derived</div>
+        <div class="item"><span class="dot" style="background:#a3c2a8"></span>answer</div>
+        <div class="item"><span class="dot" style="background:#8dafcc"></span>其它 / 回退</div>
       </div>
       <div id="mynetwork"></div>
     </div>
@@ -1157,7 +1203,7 @@ def create_interactive_graph_only_visualization(
     function renderInfo(nodeId) {{
       const info = nodeInfo[nodeId];
       if (!info) return;
-      const keys = ["id", "fact_id", "type", "origin", "is_final_answer", "parent_fact_ids", "proof_obligation", "node_type", "dependencies", "natural_language", "statement", "text", "needs_verification"];
+      const keys = ["fact_id", "origin", "type", "is_final_answer", "parent_fact_ids", "proof_obligation", "text", "form_status", "prove_status", "formalization", "solved_lemma"];
       let html = "";
       for (const k of keys) {{
         const v = info[k];

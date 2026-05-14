@@ -7,7 +7,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from proofflow.vis import (
@@ -20,13 +20,12 @@ from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode, extra
 
 JsonDict = Dict[str, Any]
 COMPARE_FIELD_OPTIONS = [
-    ("natural_language", "Natural Language"),
-    ("statement", "Statement"),
-    ("text", "Fact Text"),
-    ("proof_obligation.informal_statement_content", "Proof Obligation"),
-    ("formalization.lean_code", "Formalization.lean_code"),
-    ("formalization.dependency_context_block", "Formalization.dependency_context_block"),
-    ("solved_lemma.lean_code", "Solved_lemma.lean_code"),
+    ("text", "Fact text"),
+    ("origin", "Origin (fdg_origin4)"),
+    ("proof_obligation.informal_statement_content", "Proof obligation (informal)"),
+    ("formalization.lean_code", "Formalization (Lean)"),
+    ("formalization.dependency_context_block", "Formalization (context block)"),
+    ("solved_lemma.lean_code", "Proof / solved lemma (Lean)"),
 ]
 
 
@@ -72,6 +71,33 @@ def _build_proof_str(rec: JsonDict) -> str:
     return "\n".join(parts)
 
 
+def _resolve_stage3_jsonl(loc: Path) -> Tuple[Path, str]:
+    """解析目录或直接指向的 stage3_results.jsonl，返回 (jsonl路径, UI 展示用实验名)。"""
+    p = loc.expanduser().resolve()
+    if p.is_file():
+        if p.name != "stage3_results.jsonl":
+            raise ValueError(f"应为 stage3_results.jsonl，实际为: {p.name}")
+        jsonl = p
+    elif p.is_dir():
+        nested = p / "result_stage3" / "stage3_results.jsonl"
+        flat = p / "stage3_results.jsonl"
+        if nested.is_file():
+            jsonl = nested
+        elif flat.is_file():
+            jsonl = flat
+        else:
+            raise ValueError(f"目录下找不到 result_stage3/stage3_results.jsonl 或 stage3_results.jsonl: {p}")
+    else:
+        raise ValueError(f"路径不存在: {loc}")
+    # 实验名列名：若在 .../<name>/result_stage3/stage3_results.jsonl 则用 <name>
+    parent = jsonl.parent
+    if parent.name == "result_stage3" and parent.parent is not None:
+        label = parent.parent.name
+    else:
+        label = parent.name
+    return jsonl, label
+
+
 def _get_nested_value(payload: JsonDict, field_path: str) -> Any:
     current: Any = payload
     for part in field_path.split("."):
@@ -84,17 +110,35 @@ def _get_nested_value(payload: JsonDict, field_path: str) -> Any:
 
 
 class ViewerApp:
-    def __init__(self, repo_root: Path, results_root: Path, source: str, graph_only: bool) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        results_root: Path,
+        source: str,
+        graph_only: bool,
+        *,
+        pinned: Optional[Tuple[Path, str]] = None,
+    ) -> None:
         self.repo_root = repo_root
         self.results_root = results_root
         self.source = source
         self.graph_only = graph_only
+        self._pinned_jsonl: Optional[Path] = pinned[0] if pinned else None
+        self._pinned_label: Optional[str] = pinned[1] if pinned else None
         self.cache_dir = self.repo_root / ".tmp_stage3_viewer_html"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_lock = threading.Lock()
         self._record_cache: Dict[str, Dict[str, JsonDict]] = {}
 
+    def pinned_mode(self) -> bool:
+        return self._pinned_jsonl is not None
+
+    def stage3_display_path(self) -> str:
+        return str(self._pinned_jsonl.resolve()) if self._pinned_jsonl else ""
+
     def list_experiments(self) -> List[str]:
+        if self._pinned_jsonl is not None and self._pinned_label:
+            return [self._pinned_label]
         if not self.results_root.is_dir():
             return []
         names = [
@@ -109,7 +153,15 @@ class ViewerApp:
         if exp_name in self._record_cache:
             return self._record_cache[exp_name]
 
-        stage3_jsonl = self.results_root / exp_name / "result_stage3" / "stage3_results.jsonl"
+        if self._pinned_jsonl is not None:
+            if self._pinned_label and exp_name != self._pinned_label:
+                raise FileNotFoundError(
+                    f"当前为单会话模式，仅允许实验名 {self._pinned_label!r}，收到: {exp_name!r}"
+                )
+            stage3_jsonl = self._pinned_jsonl
+        else:
+            stage3_jsonl = self.results_root / exp_name / "result_stage3" / "stage3_results.jsonl"
+
         if not stage3_jsonl.is_file():
             raise FileNotFoundError(f"missing stage3 file: {stage3_jsonl}")
 
@@ -232,11 +284,13 @@ def _html_page() -> str:
     #viewerWrap { background: #fff; border: 1px solid #ddd; border-radius: 8px; min-height: 600px; }
     #viewer { width: 100%; height: 76vh; border: 0; border-radius: 8px; }
     .error { color: #c62828; white-space: pre-wrap; }
+    #sessionBanner { padding: 6px 8px; background: #e8f4fd; border-radius: 6px; font-size: 13px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="panel">
+      <div id="sessionBanner" class="row muted" style="display:none;"></div>
       <div class="row"><strong>Experiments:</strong></div>
       <div class="row" id="expOptions"></div>
       <div class="row" style="margin-top:8px;"><strong>Compare Fields:</strong></div>
@@ -277,10 +331,17 @@ def _html_page() -> str:
 
     async function loadExperiments() {
       const data = await getJSON('/api/experiments');
+      const ban = document.getElementById('sessionBanner');
+      if (data.pinned_mode && data.stage3_jsonl) {
+        ban.style.display = 'flex';
+        ban.textContent = '单会话模式（直接绑定 stage3）：' + data.stage3_jsonl;
+      } else {
+        ban.style.display = 'none';
+      }
       const expOptions = document.getElementById('expOptions');
       expOptions.innerHTML = '';
       if (!data.experiments.length) {
-        expOptions.innerHTML = '<span class="error">未发现可用实验（需要 results/*/result_stage3/stage3_results.jsonl）</span>';
+        expOptions.innerHTML = '<span class="error">未发现可用实验（需要 results/*/result_stage3/stage3_results.jsonl，或使用 --session-dir）</span>';
         return;
       }
       data.experiments.forEach((name, idx) => {
@@ -469,7 +530,15 @@ def create_handler(app: ViewerApp):
                 return
 
             if parsed.path == "/api/experiments":
-                _json_response(self, HTTPStatus.OK, {"experiments": app.list_experiments()})
+                _json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "experiments": app.list_experiments(),
+                        "pinned_mode": app.pinned_mode(),
+                        "stage3_jsonl": app.stage3_display_path(),
+                    },
+                )
                 return
 
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -522,12 +591,38 @@ def create_handler(app: ViewerApp):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="交互式 Stage3 结果可视化页面")
+    parser = argparse.ArgumentParser(
+        description="交互式 Stage3 结果可视化（本地 HTTP + iframe 渲染 DAG）。"
+    )
     parser.add_argument(
         "--results-root",
         type=Path,
         default=Path(__file__).resolve().parent.parent / "results",
-        help="results 根目录，默认 <repo>/results",
+        help=(
+            "多实验扫描根目录（其下每层子目录需含 result_stage3/stage3_results.jsonl）；"
+            "若使用 --session-dir 或 --stage3-jsonl 则仍可保留此参数但不再扫描"
+        ),
+    )
+    parser.add_argument(
+        "--session-dir",
+        type=Path,
+        default=None,
+        help=(
+            "单会话：指向含 stage3 的目录，例如 rollout 的 fdg 文件夹 "
+            "(其下应为 result_stage3/stage3_results.jsonl)，无需再选实验"
+        ),
+    )
+    parser.add_argument(
+        "--stage3-jsonl",
+        type=Path,
+        default=None,
+        help="单会话：直接指定 stage3_results.jsonl 文件路径（与 --session-dir 互斥）",
+    )
+    parser.add_argument(
+        "--session-label",
+        type=str,
+        default=None,
+        help="单会话时在页面上显示的「实验」名称（默认由目录推导，例如 fdg）",
     )
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
@@ -544,17 +639,40 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.session_dir is not None and args.stage3_jsonl is not None:
+        raise SystemExit("请只指定其一: --session-dir 或 --stage3-jsonl")
+
+    pinned: Optional[Tuple[Path, str]] = None
+    if args.stage3_jsonl is not None:
+        jp = args.stage3_jsonl.resolve()
+        if not jp.is_file() or jp.name != "stage3_results.jsonl":
+            raise SystemExit(f"--stage3-jsonl 必须为 stage3_results.jsonl 文件: {jp}")
+        jsonl = jp
+        if jp.parent.name == "result_stage3" and jp.parent.parent is not None:
+            _auto = jp.parent.parent.name
+        else:
+            _auto = jp.parent.name
+        label = (args.session_label or _auto).strip() or _auto
+        pinned = (jsonl, label)
+    elif args.session_dir is not None:
+        jsonl, _auto = _resolve_stage3_jsonl(args.session_dir)
+        label = (args.session_label or _auto).strip() or _auto
+        pinned = (jsonl, label)
+
     repo_root = Path(__file__).resolve().parent.parent
     app = ViewerApp(
         repo_root=repo_root,
         results_root=args.results_root.resolve(),
         source=args.source,
         graph_only=bool(args.graph_only),
+        pinned=pinned,
     )
 
     server = ThreadingHTTPServer((args.host, args.port), create_handler(app))
     print(f"Stage3 viewer started: http://{args.host}:{args.port}")
     print(f"results_root: {app.results_root}")
+    if pinned:
+        print(f"single-session stage3: {pinned[0]} (label={pinned[1]!r})")
     print(f"source: {args.source}, graph_only: {args.graph_only}")
     server.serve_forever()
 
