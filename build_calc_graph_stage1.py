@@ -95,6 +95,13 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{int(minutes)}m{rest:04.1f}s"
 
 
+def _one_line(text: Any, *, limit: int = 500) -> str:
+    value = " ".join(str(text).split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
 def _require_columns(df_columns: Any, required: List[str], path: Path) -> None:
     missing = [c for c in required if c not in df_columns]
     if missing:
@@ -419,6 +426,7 @@ class Stage1APIClient:
             attempts = 0
             request_seconds = 0.0
             sleep_seconds = 0.0
+            error_history: List[Dict[str, Any]] = []
             for attempt in range(self.api_max_retries + 1):
                 attempts += 1
                 attempt_started = time.perf_counter()
@@ -436,8 +444,17 @@ class Stage1APIClient:
                     results.append(result)
                     break
                 except Exception as exc:
-                    request_seconds += time.perf_counter() - attempt_started
+                    attempt_seconds = time.perf_counter() - attempt_started
+                    request_seconds += attempt_seconds
                     last_error = str(exc)
+                    error_history.append(
+                        {
+                            "attempt": attempts,
+                            "error_type": type(exc).__name__,
+                            "error": last_error,
+                            "elapsed_seconds": attempt_seconds,
+                        }
+                    )
                     if attempt >= self.api_max_retries:
                         results.append(
                             {
@@ -448,6 +465,8 @@ class Stage1APIClient:
                                 "stop_reason": None,
                                 "prompt_tokens": prompt_tokens,
                                 "api_error": last_error,
+                                "api_error_type": type(exc).__name__,
+                                "api_error_history": error_history,
                                 "token_count_seconds": token_count_seconds,
                                 "api_attempts": attempts,
                                 "api_request_seconds": request_seconds,
@@ -831,6 +850,7 @@ def main() -> None:
                         timing_stats["api_total_seconds"] += float(generation.get("api_total_seconds") or 0.0)
                         content = generation.get("text")
                         if args.backend == "api":
+                            api_error = generation.get("api_error")
                             print(
                                 f"  [api-timing] {record.record_id} "
                                 f"total={_fmt_seconds(float(generation.get('api_total_seconds') or 0.0))} "
@@ -841,7 +861,20 @@ def main() -> None:
                                 f"prompt_tokens={generation.get('prompt_tokens')} "
                                 f"completion_tokens={generation.get('completion_tokens')} "
                                 f"chars={generation.get('response_chars')}"
+                                + (
+                                    f" error_type={generation.get('api_error_type')} "
+                                    f"error={_one_line(api_error)}"
+                                    if api_error
+                                    else ""
+                                )
                             )
+                            for err in generation.get("api_error_history") or []:
+                                print(
+                                    f"    [api-error] attempt={err.get('attempt')} "
+                                    f"elapsed={_fmt_seconds(float(err.get('elapsed_seconds') or 0.0))} "
+                                    f"type={err.get('error_type')} "
+                                    f"message={_one_line(err.get('error'))}"
+                                )
 
                         # ── prompt token overflow ───────────────────────────
                         if generation.get("prompt_token_overflow"):
@@ -899,7 +932,11 @@ def main() -> None:
                                 failed_f.flush()
                                 timing_stats["write_seconds"] += time.perf_counter() - write_started
                                 stats["failed"] += 1
-                                print(f"  [fail]  {record.record_id}  (API error after {record.retry_count} retries)")
+                                print(
+                                    f"  [fail]  {record.record_id}  "
+                                    f"(API error after {record.retry_count} retries: "
+                                    f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
+                                )
                                 continue
 
                             retry_started = time.perf_counter()
@@ -908,7 +945,11 @@ def main() -> None:
                             pool.appendleft(record)
                             timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
                             stats["retried"] += 1
-                            print(f"  [retry] {record.record_id}  (API error; attempt {record.retry_count}/{args.max_retries})")
+                            print(
+                                f"  [retry] {record.record_id}  "
+                                f"(API error; attempt {record.retry_count}/{args.max_retries}; "
+                                f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
+                            )
                             continue
 
                         if content is None:
