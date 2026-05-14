@@ -1,3 +1,6 @@
 rollout_config: qwen3_8b
 step_proof_config: fdg_bug
 eval_config: math_verify
+
+rollout_name: qwen3_8b_8
+step_proof_name: reduce_prompt

@@ -13,7 +13,9 @@ from common import load_config, math_verify_dir, read_jsonl, step_proof_dir, ste
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Math-Verify CSV inputs for random and step-proof selections.")
     parser.add_argument("--config", type=Path, required=True)
-    return parser.parse_args()
+    args, overrides = parser.parse_known_args()
+    args.overrides = overrides
+    return args
 
 
 def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
@@ -38,7 +40,7 @@ def _rollout_responses(rec: Dict[str, Any]) -> List[tuple[int, Any]]:
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.overrides)
     out_dir = math_verify_dir(cfg)
     rollout_raw = list(read_jsonl(step_proof_rollout_dir(cfg) / "rollout_raw.jsonl"))
     selected = list(read_jsonl(step_proof_dir(cfg) / "selected_step_proof.jsonl"))

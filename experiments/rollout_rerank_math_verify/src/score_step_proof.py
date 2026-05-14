@@ -22,7 +22,9 @@ from common import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score rollout candidates by stage3 proved nodes.")
     parser.add_argument("--config", type=Path, required=True)
-    return parser.parse_args()
+    args, overrides = parser.parse_known_args()
+    args.overrides = overrides
+    return args
 
 
 def _facts_from_stage3_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -64,7 +66,7 @@ def _sort_key(row: Dict[str, Any]) -> tuple:
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.overrides)
     flat_path = step_proof_rollout_dir(cfg) / "rollout_flat.parquet"
     stage3_path = step_proof_results_dir(cfg) / "result_stage3" / "stage3_results.jsonl"
     out_dir = step_proof_dir(cfg)

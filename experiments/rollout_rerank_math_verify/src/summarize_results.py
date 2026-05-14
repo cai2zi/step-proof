@@ -17,7 +17,9 @@ def parse_args() -> argparse.Namespace:
         description="Summarize random, pass@1, step-proof, and pass@k Math-Verify results.",
     )
     parser.add_argument("--config", type=Path, required=True)
-    return parser.parse_args()
+    args, overrides = parser.parse_known_args()
+    args.overrides = overrides
+    return args
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, str]]:
@@ -175,7 +177,7 @@ def _write_metrics_csv(
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.overrides)
     mv_dir = math_verify_dir(cfg)
     out_summary_dir = summary_dir(cfg)
     out_summary_dir.mkdir(parents=True, exist_ok=True)

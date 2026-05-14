@@ -196,7 +196,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--limit-per-source", type=int, default=None)
     parser.add_argument("--limit-total", type=int, default=None)
-    return parser.parse_args()
+    args, overrides = parser.parse_known_args()
+    args.overrides = overrides
+    return args
 
 
 def _make_messages(question: str, template: str) -> List[Dict[str, str]]:
@@ -374,7 +376,7 @@ def _start_workers(
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.overrides)
     rollout_cfg = cfg["rollout"]
     out_dir = rollout_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)

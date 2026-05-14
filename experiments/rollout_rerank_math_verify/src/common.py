@@ -1,19 +1,83 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import yaml
+
+try:
+    from omegaconf import OmegaConf
+except ImportError:  # pragma: no cover - fallback for lightweight eval envs.
+    OmegaConf = None  # type: ignore[assignment]
 
 
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
 STEP_PROOF_ROOT = EXPERIMENT_DIR.parents[1]
 
 
-def load_config(path: str | Path) -> Dict[str, Any]:
+def _set_dot_path(cfg: Dict[str, Any], key: str, value: Any) -> None:
+    parts = [part for part in key.split(".") if part]
+    if not parts:
+        return
+    cur = cfg
+    for part in parts[:-1]:
+        next_value = cur.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            cur[part] = next_value
+        cur = next_value
+    cur[parts[-1]] = value
+
+
+def _select_dot_path(cfg: Dict[str, Any], key: str) -> Any:
+    cur: Any = cfg
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            raise KeyError(key)
+        cur = cur[part]
+    return cur
+
+
+def _resolve_fallback(value: Any, root: Dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        return {key: _resolve_fallback(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_fallback(item, root) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        expr = match.group(1)
+        if expr.startswith("oc.env:"):
+            return match.group(0)
+        try:
+            return str(_select_dot_path(root, expr))
+        except KeyError:
+            return match.group(0)
+
+    return re.sub(r"\$\{([^}]+)\}", replace, value)
+
+
+def _load_config_fallback(path: str | Path, overrides: List[str] | None) -> Dict[str, Any]:
     with Path(path).open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f) or {}
+    for item in overrides or []:
+        if "=" not in item:
+            raise ValueError(f"Config override must be key=value: {item!r}")
+        key, raw_value = item.split("=", 1)
+        _set_dot_path(cfg, key, yaml.safe_load(raw_value))
+    return _resolve_fallback(cfg, cfg)
+
+
+def load_config(path: str | Path, overrides: List[str] | None = None) -> Dict[str, Any]:
+    if OmegaConf is None:
+        return _load_config_fallback(path, overrides)
+    cfg = OmegaConf.load(Path(path))
+    if overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
+    return OmegaConf.to_container(cfg, resolve=True)
 
 
 def exp_dir(cfg: Dict[str, Any]) -> Path:

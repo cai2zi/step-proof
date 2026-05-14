@@ -13,12 +13,14 @@ from common import load_config, read_jsonl, rollout_dir, rollout_record_id, roll
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flatten rollout_raw.jsonl into step-proof input.")
     parser.add_argument("--config", type=Path, required=True)
-    return parser.parse_args()
+    args, overrides = parser.parse_known_args()
+    args.overrides = overrides
+    return args
 
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.overrides)
     n = int(cfg["rollout"]["n"])
     out_dir = rollout_dir(cfg)
     rollout_path = out_dir / "rollout_raw.jsonl"
