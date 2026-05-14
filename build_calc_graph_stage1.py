@@ -295,12 +295,6 @@ class Stage1APIClient:
             client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
-                http_client=httpx.Client(
-                    base_url=self.base_url,
-                    follow_redirects=True,
-                    verify=False,
-                    timeout=self.timeout,
-                ),
             )
             self._local.client = client
         return client
@@ -846,7 +840,6 @@ def main() -> None:
 
                         # ── parse + validate ────────────────────────────────
                         result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
-                        import pdb; pdb.set_trace()
                         if result.ok:
                             payload = _build_fdg_payload(
                                 record,
