@@ -15,12 +15,45 @@ run:
   stream_logs_to_console: true
 
 stage1:
+  backend: vllm  # vllm | api
+
+  
   parquet_dir: ${output_root}/rollouts/rollout_${rollout_name}
   parquet_glob: rollout_flat.parquet
   id_column: id
   question_column: question
   response_column: response
   limit: -1
+
+  # Shared generation settings.
+  max_tokens: 8192
+  temperature: 0.0
+  top_p: 1.0
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+  seed: 42
+  token_limit: 32768
+  batch_size: 16
+  max_retries: 3
+  fdg_prompt: fdg_origin4_reduce
+  include_think_in_dag: false
+
+  # API backend settings. OpenAI/ChatGPT:
+  #   api_base_url: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  # Qwen compatible mode:
+  #   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  #   api_key_env: MiUGgRpEo2a5G1OTk2VqxngYQx1bnu
+  api_model: qwen3.5-27b
+  api_base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  api_concurrency: 8
+  api_timeout: 120
+  api_max_retries: 3
+  api_retry_sleep: 2.0
+  api_input_token_limit: 32768
+
+  # vLLM backend settings.
   model_path: /root/autodl-tmp/models/Qwen3-8B
   vllm_instances: 2
   parallel_startup: True
@@ -30,20 +63,9 @@ stage1:
   gpus: 0,1
   dtype: float16
   gpu_memory_utilization: 0.95
-  max_tokens: 8192
-  temperature: 0.0
-  top_p: 1.0
-  presence_penalty: 0.0
-  frequency_penalty: 0.0
-  seed: 42
   top_k: 20
-  token_limit: 32768
   chat_template_kwargs:
     enable_thinking: true
-  batch_size: 16
-  max_retries: 3
-  fdg_prompt: fdg_origin4_reduce
-  include_think_in_dag: false
 
 lean_runtime:
   mathlib_path: /root/autodl-tmp/mathlib4
