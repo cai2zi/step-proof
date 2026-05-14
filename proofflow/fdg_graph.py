@@ -279,23 +279,23 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
                     fact_id=fact_id,
                 )
             )
-
-        if _looks_non_atomic(text):
-            warnings.append(
-                _report_entry(
-                    "possibly_non_atomic_fact",
-                    "This fact appears to contain multiple assertions.",
-                    fact_id=fact_id,
-                )
-            )
-        if _contains_narrative_words(text):
-            warnings.append(
-                _report_entry(
-                    "narrative_fact_text",
-                    "This fact contains narrative wording and may not be purely factual.",
-                    fact_id=fact_id,
-                )
-            )
+        # 去除非原子事实的警告
+        # if _looks_non_atomic(text):
+        #     warnings.append(
+        #         _report_entry(
+        #             "possibly_non_atomic_fact",
+        #             "This fact appears to contain multiple assertions.",
+        #             fact_id=fact_id,
+        #         )
+        #     )
+        # if _contains_narrative_words(text): # 去除描述性文字的警告
+        #     warnings.append(
+        #         _report_entry(
+        #             "narrative_fact_text",
+        #             "This fact contains narrative wording and may not be purely factual.",
+        #             fact_id=fact_id,
+        #         )
+        #     )
 
     final_ids = [fact.fact_id for fact in document.facts if fact.is_final_answer]
     if not final_ids:
