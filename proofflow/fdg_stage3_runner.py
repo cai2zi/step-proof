@@ -347,7 +347,7 @@ class FDGStage3Runner:
             fact = record["facts"][task["fact_id"]]
             attempt_num = task["attempt_num"]
             conversation = copy.deepcopy(task["messages"])
-            conversation.append({"role": "assistant", "content": generation.get("text") or ""})
+            conversation.append({"role": "assistant", "content": result.get("lean_code") or ""})
             if result["kind"] == "validated":
                 payload = {
                     "lean_code": result["lean_code"],
