@@ -10,6 +10,29 @@ fi
 CONFIG="${EXP_DIR}/configs/pipeline/${CONFIG_NAME}.yaml"
 PYTHON_BIN="${PYTHON:-${LEAN4_PYTHON:-/root/autodl-tmp/env/lean4/bin/python}}"
 
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
+}
+
+elapsed() {
+  local seconds="$1"
+  printf "%02d:%02d:%02d" "$((seconds / 3600))" "$(((seconds % 3600) / 60))" "$((seconds % 60))"
+}
+
+run_timed() {
+  local label="$1"
+  shift
+  local start
+  local end
+  start="$(date +%s)"
+  echo "[timing][${label}] start $(ts)"
+  "$@"
+  end="$(date +%s)"
+  echo "[timing][${label}] done $(ts) elapsed=$(elapsed "$((end - start))")"
+}
+
+PIPELINE_START="$(date +%s)"
+
 readarray -t STAGE_CONFIGS < <("${PYTHON_BIN}" - "${CONFIG}" "$@" <<'PY'
 import sys
 import yaml
@@ -55,12 +78,15 @@ export DASHSCOPE_API_KEY="sk-d4467529589744a390ca540fcb9f6013"
 ROLLOUT_NAME="${STAGE_CONFIGS[3]}"
 STEP_PROOF_NAME="${STAGE_CONFIGS[4]}"
 STAGE1_BACKEND="${STAGE_CONFIGS[5]}"
-bash "${SCRIPT_DIR}/01_rollout.sh" "${STAGE_CONFIGS[0]}" \
+echo "[timing][pipeline] start $(ts) config=${CONFIG_NAME} rollout=${ROLLOUT_NAME} step_proof=${STEP_PROOF_NAME} stage1_backend=${STAGE1_BACKEND}"
+run_timed rollout bash "${SCRIPT_DIR}/01_rollout.sh" "${STAGE_CONFIGS[0]}" \
   "name=${ROLLOUT_NAME}"
-bash "${SCRIPT_DIR}/02_step_proof.sh" "${STAGE_CONFIGS[1]}" \
+run_timed step_proof bash "${SCRIPT_DIR}/02_step_proof.sh" "${STAGE_CONFIGS[1]}" \
   "rollout_name=${ROLLOUT_NAME}" \
   "name=${STEP_PROOF_NAME}" \
   "stage1.backend=${STAGE1_BACKEND}"
-bash "${SCRIPT_DIR}/03_eval.sh" "${STAGE_CONFIGS[2]}" \
+run_timed eval bash "${SCRIPT_DIR}/03_eval.sh" "${STAGE_CONFIGS[2]}" \
   "rollout_name=${ROLLOUT_NAME}" \
   "step_proof_name=${STEP_PROOF_NAME}"
+PIPELINE_END="$(date +%s)"
+echo "[timing][pipeline] done $(ts) elapsed=$(elapsed "$((PIPELINE_END - PIPELINE_START))")"

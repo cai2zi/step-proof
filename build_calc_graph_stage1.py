@@ -86,6 +86,15 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _fmt_seconds(seconds: float) -> str:
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, rest = divmod(seconds, 60)
+    return f"{int(minutes)}m{rest:04.1f}s"
+
+
 def _require_columns(df_columns: Any, required: List[str], path: Path) -> None:
     missing = [c for c in required if c not in df_columns]
     if missing:
@@ -295,6 +304,7 @@ class Stage1APIClient:
             client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
+                timeout=self.timeout,
                 max_retries=0,
             )
             self._local.client = client
@@ -337,6 +347,8 @@ class Stage1APIClient:
     def _call_once(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         client = self._client()
         token_param = "max_tokens"
+        request_started = time.perf_counter()
+        fallback_seconds = 0.0
         try:
             completion = client.chat.completions.create(
                 **self._request_kwargs(messages, token_param)
@@ -344,10 +356,12 @@ class Stage1APIClient:
         except Exception as exc:
             if not self._should_retry_with_max_completion_tokens(exc):
                 raise
+            fallback_started = time.perf_counter()
             token_param = "max_completion_tokens"
             completion = client.chat.completions.create(
                 **self._request_kwargs(messages, token_param)
             )
+            fallback_seconds = time.perf_counter() - fallback_started
 
         choice = completion.choices[0] if completion.choices else None
         message = getattr(choice, "message", None) if choice is not None else None
@@ -368,6 +382,8 @@ class Stage1APIClient:
             "api_model": self.model,
             "api_base_url": self.base_url,
             "api_token_param": token_param,
+            "api_request_seconds": time.perf_counter() - request_started,
+            "api_fallback_seconds": fallback_seconds,
         }
 
     def generate_with_metadata(
@@ -376,7 +392,10 @@ class Stage1APIClient:
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for messages in message_batches:
+            total_started = time.perf_counter()
+            token_started = time.perf_counter()
             prompt_tokens = self._message_token_count(messages)
+            token_count_seconds = time.perf_counter() - token_started
             if self.input_token_limit > 0 and prompt_tokens > self.input_token_limit:
                 results.append(
                     {
@@ -387,19 +406,37 @@ class Stage1APIClient:
                         "stop_reason": None,
                         "prompt_tokens": prompt_tokens,
                         "token_limit": self.input_token_limit,
+                        "token_count_seconds": token_count_seconds,
+                        "api_attempts": 0,
+                        "api_request_seconds": 0.0,
+                        "api_sleep_seconds": 0.0,
+                        "api_total_seconds": time.perf_counter() - total_started,
                     }
                 )
                 continue
 
             last_error = ""
+            attempts = 0
+            request_seconds = 0.0
+            sleep_seconds = 0.0
             for attempt in range(self.api_max_retries + 1):
+                attempts += 1
+                attempt_started = time.perf_counter()
                 try:
                     result = self._call_once(messages)
+                    request_seconds += float(result.get("api_request_seconds") or 0.0)
                     if result.get("prompt_tokens") is None:
                         result["prompt_tokens"] = prompt_tokens
+                    result["token_count_seconds"] = token_count_seconds
+                    result["api_attempts"] = attempts
+                    result["api_request_seconds"] = request_seconds
+                    result["api_sleep_seconds"] = sleep_seconds
+                    result["api_total_seconds"] = time.perf_counter() - total_started
+                    result["response_chars"] = len(str(result.get("text") or ""))
                     results.append(result)
                     break
                 except Exception as exc:
+                    request_seconds += time.perf_counter() - attempt_started
                     last_error = str(exc)
                     if attempt >= self.api_max_retries:
                         results.append(
@@ -411,10 +448,17 @@ class Stage1APIClient:
                                 "stop_reason": None,
                                 "prompt_tokens": prompt_tokens,
                                 "api_error": last_error,
+                                "token_count_seconds": token_count_seconds,
+                                "api_attempts": attempts,
+                                "api_request_seconds": request_seconds,
+                                "api_sleep_seconds": sleep_seconds,
+                                "api_total_seconds": time.perf_counter() - total_started,
                             }
                         )
                         break
-                    time.sleep(self.retry_sleep * (attempt + 1))
+                    sleep_for = self.retry_sleep * (attempt + 1)
+                    time.sleep(sleep_for)
+                    sleep_seconds += sleep_for
         return results
 
     def generate_one_with_metadata(
@@ -435,6 +479,7 @@ class Stage1APIClient:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    run_started = time.perf_counter()
     parser = argparse.ArgumentParser(
         description="Stage 1 (batch + local vLLM): build calc proof graphs → graph-v1 JSONL.",
     )
@@ -537,6 +582,8 @@ def main() -> None:
     if not args.parquet_dir.is_dir():
         raise SystemExit(f"--parquet-dir is not a directory: {args.parquet_dir}")
 
+    setup_started = time.perf_counter()
+
     # Resume: load already-done IDs
     done_ids: set = set()
     if not args.no_resume:
@@ -624,6 +671,19 @@ def main() -> None:
         return
 
     stats = {"ok": 0, "skipped": 0, "failed": 0, "retried": 0}
+    timing_stats = {
+        "setup_seconds": time.perf_counter() - setup_started,
+        "dispatch_seconds": 0.0,
+        "generation_wait_seconds": 0.0,
+        "api_token_count_seconds": 0.0,
+        "api_request_seconds": 0.0,
+        "api_sleep_seconds": 0.0,
+        "api_total_seconds": 0.0,
+        "parse_validate_seconds": 0.0,
+        "payload_build_seconds": 0.0,
+        "write_seconds": 0.0,
+        "retry_prepare_seconds": 0.0,
+    }
 
     llm_pool: Any
     if args.backend == "vllm":
@@ -702,12 +762,14 @@ def main() -> None:
 
     def dispatch_next(
         executor: concurrent.futures.ThreadPoolExecutor,
-        future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord]]],
+        future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord], float]],
         worker_id: int,
     ) -> bool:
+        dispatch_started = time.perf_counter()
         refill_pool()
         batch = next_batch()
         if not batch:
+            timing_stats["dispatch_seconds"] += time.perf_counter() - dispatch_started
             return False
         if args.backend == "api":
             record = batch[0]
@@ -720,9 +782,11 @@ def main() -> None:
                 llm_pool[worker_id].generate_with_metadata,
                 [record.messages for record in batch],
             )
-        future_to_batch[future] = (worker_id, batch)
+        dispatched_at = time.perf_counter()
+        future_to_batch[future] = (worker_id, batch, dispatched_at)
+        timing_stats["dispatch_seconds"] += dispatched_at - dispatch_started
         if args.backend == "api":
-            print(f"  [worker:{worker_id}] dispatched record={batch[0].record_id}")
+            print(f"  [worker:{worker_id}] dispatched record={batch[0].record_id} retry={batch[0].retry_count}")
         else:
             print(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
         return True
@@ -734,30 +798,50 @@ def main() -> None:
             open(args.failed, write_mode, encoding="utf-8") as failed_f,
             concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor,
         ):
-            future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord]]] = {}
+            future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord], float]] = {}
             for worker_id in range(worker_count):
                 dispatch_next(executor, future_to_batch, worker_id)
 
             completed_batches = 0
             while future_to_batch:
+                wait_started = time.perf_counter()
                 done, _ = concurrent.futures.wait(
                     future_to_batch,
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
+                timing_stats["generation_wait_seconds"] += time.perf_counter() - wait_started
                 for future in done:
-                    worker_id, batch = future_to_batch[future]
+                    worker_id, batch, dispatched_at = future_to_batch[future]
                     del future_to_batch[future]
                     future_result = future.result()
                     generations = [future_result] if args.backend == "api" else future_result
+                    batch_wall_seconds = time.perf_counter() - dispatched_at
                     completed_batches += 1
                     print(
                         f"\n[worker:{worker_id}] completed batch size={len(batch)} "
                         f"completed_batches={completed_batches} "
+                        f"wall={_fmt_seconds(batch_wall_seconds)} "
                         f"(ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})"
                     )
 
                     for record, generation in zip(batch, generations):
+                        timing_stats["api_token_count_seconds"] += float(generation.get("token_count_seconds") or 0.0)
+                        timing_stats["api_request_seconds"] += float(generation.get("api_request_seconds") or 0.0)
+                        timing_stats["api_sleep_seconds"] += float(generation.get("api_sleep_seconds") or 0.0)
+                        timing_stats["api_total_seconds"] += float(generation.get("api_total_seconds") or 0.0)
                         content = generation.get("text")
+                        if args.backend == "api":
+                            print(
+                                f"  [api-timing] {record.record_id} "
+                                f"total={_fmt_seconds(float(generation.get('api_total_seconds') or 0.0))} "
+                                f"request={_fmt_seconds(float(generation.get('api_request_seconds') or 0.0))} "
+                                f"tokenize={_fmt_seconds(float(generation.get('token_count_seconds') or 0.0))} "
+                                f"sleep={_fmt_seconds(float(generation.get('api_sleep_seconds') or 0.0))} "
+                                f"attempts={generation.get('api_attempts')} "
+                                f"prompt_tokens={generation.get('prompt_tokens')} "
+                                f"completion_tokens={generation.get('completion_tokens')} "
+                                f"chars={generation.get('response_chars')}"
+                            )
 
                         # ── prompt token overflow ───────────────────────────
                         if generation.get("prompt_token_overflow"):
@@ -765,6 +849,7 @@ def main() -> None:
                                 "token_limit",
                                 args.api_input_token_limit if args.backend == "api" else args.token_limit,
                             )
+                            write_started = time.perf_counter()
                             skipped_f.write(json.dumps({
                                 "record_id": record.record_id,
                                 "source_file": record.source_file,
@@ -783,6 +868,7 @@ def main() -> None:
                                 },
                             }, ensure_ascii=False) + "\n")
                             skipped_f.flush()
+                            timing_stats["write_seconds"] += time.perf_counter() - write_started
                             stats["skipped"] += 1
                             print(f"  [skip]  {record.record_id} (prompt token overflow)")
                             continue
@@ -791,6 +877,7 @@ def main() -> None:
                             error_msg = f"API request failed: {generation.get('api_error')}"
                             conversation = list(record.messages) + [{"role": "assistant", "content": ""}]
                             if record.retry_count >= args.max_retries:
+                                write_started = time.perf_counter()
                                 failed_f.write(json.dumps({
                                     "record_id": record.record_id,
                                     "source_file": record.source_file,
@@ -810,13 +897,16 @@ def main() -> None:
                                     },
                                 }, ensure_ascii=False) + "\n")
                                 failed_f.flush()
+                                timing_stats["write_seconds"] += time.perf_counter() - write_started
                                 stats["failed"] += 1
                                 print(f"  [fail]  {record.record_id}  (API error after {record.retry_count} retries)")
                                 continue
 
+                            retry_started = time.perf_counter()
                             record.messages = append_error_to_messages(record.messages, "", error_msg)
                             record.retry_count += 1
                             pool.appendleft(record)
+                            timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
                             stats["retried"] += 1
                             print(f"  [retry] {record.record_id}  (API error; attempt {record.retry_count}/{args.max_retries})")
                             continue
@@ -827,6 +917,7 @@ def main() -> None:
                         if generation.get("output_truncated"):
                             error_msg = FDG_OUTPUT_TRUNCATED_RETRY_HINT
                             if record.retry_count >= args.max_retries:
+                                write_started = time.perf_counter()
                                 failed_f.write(json.dumps({
                                     "record_id": record.record_id,
                                     "source_file": record.source_file,
@@ -846,20 +937,27 @@ def main() -> None:
                                     },
                                 }, ensure_ascii=False) + "\n")
                                 failed_f.flush()
+                                timing_stats["write_seconds"] += time.perf_counter() - write_started
                                 stats["failed"] += 1
                                 print(f"  [fail]  {record.record_id}  (output truncated after {record.retry_count} retries)")
                                 continue
 
+                            retry_started = time.perf_counter()
                             record.messages = append_error_to_messages(record.messages, content, error_msg)
                             record.retry_count += 1
                             pool.appendleft(record)
+                            timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
                             stats["retried"] += 1
                             print(f"  [retry] {record.record_id}  (output truncated; attempt {record.retry_count}/{args.max_retries})")
                             continue
 
                         # ── parse + validate ────────────────────────────────
+                        parse_started = time.perf_counter()
                         result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
+                        parse_seconds = time.perf_counter() - parse_started
+                        timing_stats["parse_validate_seconds"] += parse_seconds
                         if result.ok:
+                            payload_started = time.perf_counter()
                             payload = _build_fdg_payload(
                                 record,
                                 result.document,
@@ -868,14 +966,26 @@ def main() -> None:
                                 conversation,
                                 list((result.report or {}).get("warnings") or []),
                             )
+                            payload_seconds = time.perf_counter() - payload_started
+                            timing_stats["payload_build_seconds"] += payload_seconds
+                            write_started = time.perf_counter()
                             graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
                             graphs_f.flush()
+                            write_seconds = time.perf_counter() - write_started
+                            timing_stats["write_seconds"] += write_seconds
                             stats["ok"] += 1
-                            print(f"  [ok]    {record.record_id}  (tries={record.retry_count + 1})")
+                            print(
+                                f"  [ok]    {record.record_id}  "
+                                f"(tries={record.retry_count + 1} "
+                                f"parse={_fmt_seconds(parse_seconds)} "
+                                f"payload={_fmt_seconds(payload_seconds)} "
+                                f"write={_fmt_seconds(write_seconds)})"
+                            )
                             continue
 
                         # ── max retries reached ─────────────────────────────
                         if record.retry_count >= args.max_retries:
+                            write_started = time.perf_counter()
                             failed_f.write(json.dumps({
                                 "record_id": record.record_id,
                                 "source_file": record.source_file,
@@ -893,14 +1003,17 @@ def main() -> None:
                                 },
                             }, ensure_ascii=False) + "\n")
                             failed_f.flush()
+                            timing_stats["write_seconds"] += time.perf_counter() - write_started
                             stats["failed"] += 1
                             print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
                             continue
 
                         # ── retry: update messages and put back in pool ─────
+                        retry_started = time.perf_counter()
                         record.messages = append_error_to_messages(record.messages, content, result.error_msg)
                         record.retry_count += 1
                         pool.appendleft(record)   # retries go to the front
+                        timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
                         stats["retried"] += 1
                         print(f"  [retry] {record.record_id}  (attempt {record.retry_count}/{args.max_retries})")
 
@@ -919,6 +1032,26 @@ def main() -> None:
     print(f"  graphs  → {args.out}")
     print(f"  skipped → {args.skipped}")
     print(f"  failed  → {args.failed}")
+
+    total_seconds = time.perf_counter() - run_started
+    processed = stats["ok"] + stats["skipped"] + stats["failed"]
+    rate = processed / total_seconds if total_seconds > 0 else 0.0
+    print(
+        "[timing] "
+        f"total={_fmt_seconds(total_seconds)} "
+        f"processed={processed} rate={rate:.3f}/s "
+        f"setup={_fmt_seconds(timing_stats['setup_seconds'])} "
+        f"dispatch={_fmt_seconds(timing_stats['dispatch_seconds'])} "
+        f"wait={_fmt_seconds(timing_stats['generation_wait_seconds'])} "
+        f"api_total_sum={_fmt_seconds(timing_stats['api_total_seconds'])} "
+        f"api_request_sum={_fmt_seconds(timing_stats['api_request_seconds'])} "
+        f"api_tokenize_sum={_fmt_seconds(timing_stats['api_token_count_seconds'])} "
+        f"api_sleep_sum={_fmt_seconds(timing_stats['api_sleep_seconds'])} "
+        f"parse_sum={_fmt_seconds(timing_stats['parse_validate_seconds'])} "
+        f"payload_sum={_fmt_seconds(timing_stats['payload_build_seconds'])} "
+        f"write_sum={_fmt_seconds(timing_stats['write_seconds'])} "
+        f"retry_prepare_sum={_fmt_seconds(timing_stats['retry_prepare_seconds'])}"
+    )
 
 
 if __name__ == "__main__":
