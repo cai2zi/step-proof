@@ -78,6 +78,13 @@ class PendingRecord:
     retry_count: int = 0
 
 
+@dataclass
+class Stage1OutputFiles:
+    graphs: Any
+    skipped: Any
+    failed: Any
+
+
 # ---------------------------------------------------------------------------
 # Helpers: parquet iteration, serialization, resume
 # ---------------------------------------------------------------------------
@@ -92,7 +99,10 @@ def _fmt_seconds(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.2f}s"
     minutes, rest = divmod(seconds, 60)
-    return f"{int(minutes)}m{rest:04.1f}s"
+    if minutes < 60:
+        return f"{int(minutes)}m{rest:04.1f}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h{int(minutes):02d}m{rest:04.1f}s"
 
 
 def _one_line(text: Any, *, limit: int = 500) -> str:
@@ -100,6 +110,10 @@ def _one_line(text: Any, *, limit: int = 500) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 3] + "..."
+
+
+def _cell_missing(value: Any) -> bool:
+    return value is None or (isinstance(value, float) and pd.isna(value))
 
 
 def _require_columns(df_columns: Any, required: List[str], path: Path) -> None:
@@ -176,6 +190,149 @@ def load_terminal_ids(path: Path) -> set:
             if rid:
                 terminal.add(str(rid))
     return terminal
+
+
+class Stage1Progress:
+    """Total record-level progress for Stage 1 terminal outcomes."""
+
+    def __init__(self, total: int, *, started: Optional[float] = None) -> None:
+        self.total = max(0, int(total))
+        self.completed = 0
+        self.started = time.perf_counter() if started is None else started
+        self._bar = None
+        try:
+            from tqdm.auto import tqdm  # type: ignore
+
+            self._bar = tqdm(
+                total=self.total,
+                desc="[stage1]",
+                unit="record",
+                dynamic_ncols=True,
+            )
+        except Exception:
+            self._bar = None
+            print(self._line({}), flush=True)
+
+    def _snapshot(self, stats: Dict[str, int]) -> Dict[str, Any]:
+        elapsed = time.perf_counter() - self.started
+        remaining = max(0, self.total - self.completed)
+        rate = self.completed / elapsed if elapsed > 0 else 0.0
+        eta = remaining / rate if rate > 0 else 0.0
+        return {
+            "completed": self.completed,
+            "total": self.total,
+            "remaining": remaining,
+            "elapsed": elapsed,
+            "eta": eta,
+            "rate": rate,
+            "ok": stats.get("ok", 0),
+            "skipped": stats.get("skipped", 0),
+            "failed": stats.get("failed", 0),
+            "retried": stats.get("retried", 0),
+        }
+
+    def _postfix(self, stats: Dict[str, int]) -> str:
+        snap = self._snapshot(stats)
+        return (
+            f"completed={snap['completed']}/{snap['total']} "
+            f"remaining={snap['remaining']} "
+            f"elapsed={_fmt_seconds(snap['elapsed'])} "
+            f"eta={_fmt_seconds(snap['eta']) if snap['completed'] else 'unknown'} "
+            f"ok={snap['ok']} skip={snap['skipped']} "
+            f"fail={snap['failed']} retry={snap['retried']}"
+        )
+
+    def _line(self, stats: Dict[str, int]) -> str:
+        return f"[progress] {self._postfix(stats)}"
+
+    def log(self, message: str) -> None:
+        if self._bar is not None:
+            self._bar.write(message)
+        else:
+            print(message, flush=True)
+
+    def update(self, amount: int, stats: Dict[str, int]) -> None:
+        if amount <= 0:
+            return
+        self.completed += amount
+        if self._bar is not None:
+            self._bar.set_postfix_str(self._postfix(stats), refresh=False)
+            self._bar.update(amount)
+        else:
+            print(self._line(stats), flush=True)
+
+    def close(self, stats: Dict[str, int]) -> None:
+        if self._bar is not None:
+            self._bar.set_postfix_str(self._postfix(stats), refresh=False)
+            self._bar.close()
+
+
+class PendingRecordSource:
+    """Scans parquet shards and yields Stage 1 records after resume filtering."""
+
+    def __init__(self, args: argparse.Namespace, done_ids: set, log: Any = print) -> None:
+        self.args = args
+        self.done_ids = done_ids
+        self.log = log
+        self.required_columns = [
+            args.id_column,
+            args.question_column,
+            args.response_column,
+        ]
+
+    def _rows(self) -> Iterable[Tuple[Path, int, pd.Series]]:
+        return _iter_parquet_rows(self.args.parquet_dir, self.args.glob, self.required_columns)
+
+    def _candidate_values(self, row: pd.Series) -> Optional[Tuple[str, Any, Any]]:
+        record_id = str(row[self.args.id_column]).strip()
+        if not record_id or record_id in self.done_ids:
+            return None
+        problem = row[self.args.question_column]
+        raw_cot = row[self.args.response_column]
+        if _cell_missing(problem) or _cell_missing(raw_cot):
+            return None
+        return record_id, problem, raw_cot
+
+    def count_pending(self) -> int:
+        total = 0
+        for _, _, row in self._rows():
+            if self.args.limit >= 0 and total >= self.args.limit:
+                break
+            if self._candidate_values(row) is not None:
+                total += 1
+        return total
+
+    def iter_pending(self) -> Iterable[PendingRecord]:
+        yielded = 0
+        for fp, pos, row in self._rows():
+            if self.args.limit >= 0 and yielded >= self.args.limit:
+                return
+            record_id = str(row[self.args.id_column]).strip()
+            if not record_id:
+                continue
+            if record_id in self.done_ids:
+                self.log(f"  [resume] skip {record_id}")
+                continue
+            problem = row[self.args.question_column]
+            raw_cot = row[self.args.response_column]
+            if _cell_missing(problem) or _cell_missing(raw_cot):
+                continue
+            messages = build_fdg_messages(
+                problem_text=str(problem),
+                solution_or_cot=str(raw_cot),
+                include_think_in_dag=self.args.include_think_in_dag,
+                prompt_name=self.args.fdg_prompt,
+            )
+            yielded += 1
+            yield PendingRecord(
+                record_id=record_id,
+                problem=str(problem),
+                raw_cot=str(raw_cot),
+                source_file=_rel_source_file(self.args.parquet_dir, fp),
+                source_row_pos=pos,
+                fdg_prompt=self.args.fdg_prompt,
+                messages=messages,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -493,12 +650,280 @@ class Stage1APIClient:
             close()
 
 
+class Stage1ResultHandler:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        pool: deque[PendingRecord],
+        stats: Dict[str, int],
+        timing_stats: Dict[str, float],
+        progress: Stage1Progress,
+        log: Any = print,
+    ) -> None:
+        self.args = args
+        self.pool = pool
+        self.stats = stats
+        self.timing_stats = timing_stats
+        self.progress = progress
+        self.log = log
+
+    def _write_jsonl(self, fp: Any, payload: Dict[str, Any]) -> None:
+        write_started = time.perf_counter()
+        fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        fp.flush()
+        self.timing_stats["write_seconds"] += time.perf_counter() - write_started
+
+    def _record_input(self, record: PendingRecord) -> Dict[str, str]:
+        return {
+            "problem": record.problem,
+            "raw_cot": record.raw_cot,
+        }
+
+    def _terminal_base_payload(self, record: PendingRecord) -> Dict[str, Any]:
+        return {
+            "record_id": record.record_id,
+            "source_file": record.source_file,
+            "source_row_pos": record.source_row_pos,
+            "fdg_prompt": record.fdg_prompt,
+            "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+        }
+
+    def _mark_terminal(self, key: str) -> None:
+        self.stats[key] += 1
+        self.progress.update(1, self.stats)
+
+    def _record_retry(self, record: PendingRecord, assistant_response: str, error_msg: str) -> None:
+        retry_started = time.perf_counter()
+        record.messages = append_error_to_messages(record.messages, assistant_response, error_msg)
+        record.retry_count += 1
+        self.pool.appendleft(record)
+        self.timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
+        self.stats["retried"] += 1
+
+    def _write_failed(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        error_msg: str,
+        conversation: List[Dict[str, str]],
+        generation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        payload = {
+            **self._terminal_base_payload(record),
+            "retry_count": record.retry_count,
+            "last_error": error_msg,
+            "input": self._record_input(record),
+            "extraction": {
+                "conversation": conversation,
+            },
+        }
+        if generation is not None:
+            payload["finish_reason"] = generation.get("finish_reason")
+            payload["stop_reason"] = generation.get("stop_reason")
+        self._write_jsonl(outputs.failed, payload)
+        self._mark_terminal("failed")
+
+    def _log_api_timing(self, record: PendingRecord, generation: Dict[str, Any]) -> None:
+        api_error = generation.get("api_error")
+        self.log(
+            f"  [api-timing] {record.record_id} "
+            f"total={_fmt_seconds(float(generation.get('api_total_seconds') or 0.0))} "
+            f"request={_fmt_seconds(float(generation.get('api_request_seconds') or 0.0))} "
+            f"tokenize={_fmt_seconds(float(generation.get('token_count_seconds') or 0.0))} "
+            f"sleep={_fmt_seconds(float(generation.get('api_sleep_seconds') or 0.0))} "
+            f"attempts={generation.get('api_attempts')} "
+            f"prompt_tokens={generation.get('prompt_tokens')} "
+            f"completion_tokens={generation.get('completion_tokens')} "
+            f"chars={generation.get('response_chars')}"
+            + (
+                f" error_type={generation.get('api_error_type')} "
+                f"error={_one_line(api_error)}"
+                if api_error
+                else ""
+            )
+        )
+        for err in generation.get("api_error_history") or []:
+            self.log(
+                f"    [api-error] attempt={err.get('attempt')} "
+                f"elapsed={_fmt_seconds(float(err.get('elapsed_seconds') or 0.0))} "
+                f"type={err.get('error_type')} "
+                f"message={_one_line(err.get('error'))}"
+            )
+
+    def _accumulate_generation_timing(self, generation: Dict[str, Any]) -> None:
+        self.timing_stats["api_token_count_seconds"] += float(generation.get("token_count_seconds") or 0.0)
+        self.timing_stats["api_request_seconds"] += float(generation.get("api_request_seconds") or 0.0)
+        self.timing_stats["api_sleep_seconds"] += float(generation.get("api_sleep_seconds") or 0.0)
+        self.timing_stats["api_total_seconds"] += float(generation.get("api_total_seconds") or 0.0)
+
+    def _handle_prompt_overflow(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        generation: Dict[str, Any],
+    ) -> None:
+        skipped_token_limit = generation.get(
+            "token_limit",
+            self.args.api_input_token_limit if self.args.backend == "api" else self.args.token_limit,
+        )
+        self._write_jsonl(
+            outputs.skipped,
+            {
+                **self._terminal_base_payload(record),
+                "reason": "prompt_token_overflow",
+                "prompt_tokens": generation.get("prompt_tokens"),
+                "token_limit": skipped_token_limit,
+                "input": self._record_input(record),
+                "extraction": {
+                    "conversation": list(record.messages),
+                },
+            },
+        )
+        self._mark_terminal("skipped")
+        self.log(f"  [skip]  {record.record_id} (prompt token overflow)")
+
+    def _handle_api_error(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        generation: Dict[str, Any],
+    ) -> None:
+        error_msg = f"API request failed: {generation.get('api_error')}"
+        conversation = list(record.messages) + [{"role": "assistant", "content": ""}]
+        if record.retry_count >= self.args.max_retries:
+            self._write_failed(outputs, record, error_msg, conversation, generation)
+            self.log(
+                f"  [fail]  {record.record_id}  "
+                f"(API error after {record.retry_count} retries: "
+                f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
+            )
+            return
+
+        self._record_retry(record, "", error_msg)
+        self.log(
+            f"  [retry] {record.record_id}  "
+            f"(API error; attempt {record.retry_count}/{self.args.max_retries}; "
+            f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
+        )
+
+    def _handle_truncated_output(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        content: str,
+        conversation: List[Dict[str, str]],
+        generation: Dict[str, Any],
+    ) -> None:
+        error_msg = FDG_OUTPUT_TRUNCATED_RETRY_HINT
+        if record.retry_count >= self.args.max_retries:
+            self._write_failed(outputs, record, error_msg, conversation, generation)
+            self.log(f"  [fail]  {record.record_id}  (output truncated after {record.retry_count} retries)")
+            return
+
+        self._record_retry(record, content, error_msg)
+        self.log(f"  [retry] {record.record_id}  (output truncated; attempt {record.retry_count}/{self.args.max_retries})")
+
+    def _handle_valid_fdg(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        document: FDGDocument,
+        conversation: List[Dict[str, str]],
+        warnings: List[Dict[str, Any]],
+        parse_seconds: float,
+    ) -> None:
+        payload_started = time.perf_counter()
+        payload = _build_fdg_payload(
+            record,
+            document,
+            record.retry_count + 1,
+            self.args.include_think_in_dag,
+            conversation,
+            warnings,
+        )
+        payload_seconds = time.perf_counter() - payload_started
+        self.timing_stats["payload_build_seconds"] += payload_seconds
+
+        write_started = time.perf_counter()
+        outputs.graphs.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        outputs.graphs.flush()
+        write_seconds = time.perf_counter() - write_started
+        self.timing_stats["write_seconds"] += write_seconds
+        self._mark_terminal("ok")
+        self.log(
+            f"  [ok]    {record.record_id}  "
+            f"(tries={record.retry_count + 1} "
+            f"parse={_fmt_seconds(parse_seconds)} "
+            f"payload={_fmt_seconds(payload_seconds)} "
+            f"write={_fmt_seconds(write_seconds)})"
+        )
+
+    def _handle_invalid_fdg(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        content: str,
+        conversation: List[Dict[str, str]],
+        error_msg: str,
+    ) -> None:
+        if record.retry_count >= self.args.max_retries:
+            self._write_failed(outputs, record, error_msg, conversation)
+            self.log(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
+            return
+
+        self._record_retry(record, content, error_msg)
+        self.log(f"  [retry] {record.record_id}  (attempt {record.retry_count}/{self.args.max_retries})")
+
+    def handle(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        generation: Dict[str, Any],
+    ) -> None:
+        self._accumulate_generation_timing(generation)
+        if self.args.backend == "api":
+            self._log_api_timing(record, generation)
+
+        if generation.get("prompt_token_overflow"):
+            self._handle_prompt_overflow(outputs, record, generation)
+            return
+
+        if generation.get("api_error"):
+            self._handle_api_error(outputs, record, generation)
+            return
+
+        content = generation.get("text")
+        if content is None:
+            content = ""
+        conversation = list(record.messages) + [{"role": "assistant", "content": content}]
+
+        if generation.get("output_truncated"):
+            self._handle_truncated_output(outputs, record, content, conversation, generation)
+            return
+
+        parse_started = time.perf_counter()
+        result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
+        parse_seconds = time.perf_counter() - parse_started
+        self.timing_stats["parse_validate_seconds"] += parse_seconds
+        if result.ok:
+            self._handle_valid_fdg(
+                outputs,
+                record,
+                result.document,
+                conversation,
+                list((result.report or {}).get("warnings") or []),
+                parse_seconds,
+            )
+            return
+
+        self._handle_invalid_fdg(outputs, record, content, conversation, result.error_msg)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    run_started = time.perf_counter()
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Stage 1 (batch + local vLLM): build calc proof graphs → graph-v1 JSONL.",
     )
@@ -590,7 +1015,12 @@ def main() -> None:
         ),
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    run_started = time.perf_counter()
+    args = build_arg_parser().parse_args()
 
     chat_template_kwargs: Optional[Dict[str, Any]] = None
     if args.chat_template_kwargs_json:
@@ -622,52 +1052,16 @@ def main() -> None:
     for p in (args.out, args.skipped, args.failed):
         p.parent.mkdir(parents=True, exist_ok=True)
 
-    # Parquet iterator with column check
-    required = [args.id_column, args.question_column, args.response_column]
-    raw_iter = _iter_parquet_rows(args.parquet_dir, args.glob, required)
+    source = PendingRecordSource(args, done_ids)
+    total_pending = source.count_pending()
+    print(f"[progress] total pending records to process: {total_pending}")
+    if total_pending <= 0:
+        print("[done] no pending records.")
+        return
 
-    new_count = 0  # newly pulled records (for --limit)
+    progress = Stage1Progress(total_pending, started=run_started)
+    pending_iter = iter(PendingRecordSource(args, done_ids, log=progress.log).iter_pending())
 
-    def next_pending() -> Optional[PendingRecord]:
-        """Pull the next not-yet-done record from parquet."""
-        nonlocal new_count
-        while True:
-            if args.limit >= 0 and new_count >= args.limit:
-                return None
-            item = next(raw_iter, None)
-            if item is None:
-                return None
-            fp, pos, row = item
-            record_id = str(row[args.id_column]).strip()
-            if not record_id:
-                continue
-            if record_id in done_ids:
-                print(f"  [resume] skip {record_id}")
-                continue
-            problem = row[args.question_column]
-            raw_cot = row[args.response_column]
-            if problem is None or (isinstance(problem, float) and pd.isna(problem)):
-                continue
-            if raw_cot is None or (isinstance(raw_cot, float) and pd.isna(raw_cot)):
-                continue
-            msgs = build_fdg_messages(
-                problem_text=str(problem),
-                solution_or_cot=str(raw_cot),
-                include_think_in_dag=args.include_think_in_dag,
-                prompt_name=args.fdg_prompt,
-            )
-            new_count += 1
-            return PendingRecord(
-                record_id=record_id,
-                problem=str(problem),
-                raw_cot=str(raw_cot),
-                source_file=_rel_source_file(args.parquet_dir, fp),
-                source_row_pos=pos,
-                fdg_prompt=args.fdg_prompt,
-                messages=msgs,
-            )
-
-    # Pre-fill pool
     pool: deque[PendingRecord] = deque()
     worker_count = args.vllm_instances if args.backend == "vllm" else args.api_concurrency
     if worker_count < 1:
@@ -679,7 +1073,7 @@ def main() -> None:
 
     def refill_pool() -> None:
         while len(pool) < refill_target:
-            rec = next_pending()
+            rec = next(pending_iter, None)
             if rec is None:
                 break
             pool.append(rec)
@@ -687,6 +1081,7 @@ def main() -> None:
     refill_pool()
     if not pool:
         print("[done] no pending records.")
+        progress.close({"ok": 0, "skipped": 0, "failed": 0, "retried": 0})
         return
 
     stats = {"ok": 0, "skipped": 0, "failed": 0, "retried": 0}
@@ -805,9 +1200,9 @@ def main() -> None:
         future_to_batch[future] = (worker_id, batch, dispatched_at)
         timing_stats["dispatch_seconds"] += dispatched_at - dispatch_started
         if args.backend == "api":
-            print(f"  [worker:{worker_id}] dispatched record={batch[0].record_id} retry={batch[0].retry_count}")
+            progress.log(f"  [worker:{worker_id}] dispatched record={batch[0].record_id} retry={batch[0].retry_count}")
         else:
-            print(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
+            progress.log(f"  [worker:{worker_id}] dispatched batch size={len(batch)}")
         return True
 
     try:
@@ -817,6 +1212,15 @@ def main() -> None:
             open(args.failed, write_mode, encoding="utf-8") as failed_f,
             concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor,
         ):
+            outputs = Stage1OutputFiles(graphs=graphs_f, skipped=skipped_f, failed=failed_f)
+            result_handler = Stage1ResultHandler(
+                args,
+                pool,
+                stats,
+                timing_stats,
+                progress,
+                log=progress.log,
+            )
             future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord], float]] = {}
             for worker_id in range(worker_count):
                 dispatch_next(executor, future_to_batch, worker_id)
@@ -836,7 +1240,7 @@ def main() -> None:
                     generations = [future_result] if args.backend == "api" else future_result
                     batch_wall_seconds = time.perf_counter() - dispatched_at
                     completed_batches += 1
-                    print(
+                    progress.log(
                         f"\n[worker:{worker_id}] completed batch size={len(batch)} "
                         f"completed_batches={completed_batches} "
                         f"wall={_fmt_seconds(batch_wall_seconds)} "
@@ -844,219 +1248,7 @@ def main() -> None:
                     )
 
                     for record, generation in zip(batch, generations):
-                        timing_stats["api_token_count_seconds"] += float(generation.get("token_count_seconds") or 0.0)
-                        timing_stats["api_request_seconds"] += float(generation.get("api_request_seconds") or 0.0)
-                        timing_stats["api_sleep_seconds"] += float(generation.get("api_sleep_seconds") or 0.0)
-                        timing_stats["api_total_seconds"] += float(generation.get("api_total_seconds") or 0.0)
-                        content = generation.get("text")
-                        if args.backend == "api":
-                            api_error = generation.get("api_error")
-                            print(
-                                f"  [api-timing] {record.record_id} "
-                                f"total={_fmt_seconds(float(generation.get('api_total_seconds') or 0.0))} "
-                                f"request={_fmt_seconds(float(generation.get('api_request_seconds') or 0.0))} "
-                                f"tokenize={_fmt_seconds(float(generation.get('token_count_seconds') or 0.0))} "
-                                f"sleep={_fmt_seconds(float(generation.get('api_sleep_seconds') or 0.0))} "
-                                f"attempts={generation.get('api_attempts')} "
-                                f"prompt_tokens={generation.get('prompt_tokens')} "
-                                f"completion_tokens={generation.get('completion_tokens')} "
-                                f"chars={generation.get('response_chars')}"
-                                + (
-                                    f" error_type={generation.get('api_error_type')} "
-                                    f"error={_one_line(api_error)}"
-                                    if api_error
-                                    else ""
-                                )
-                            )
-                            for err in generation.get("api_error_history") or []:
-                                print(
-                                    f"    [api-error] attempt={err.get('attempt')} "
-                                    f"elapsed={_fmt_seconds(float(err.get('elapsed_seconds') or 0.0))} "
-                                    f"type={err.get('error_type')} "
-                                    f"message={_one_line(err.get('error'))}"
-                                )
-
-                        # ── prompt token overflow ───────────────────────────
-                        if generation.get("prompt_token_overflow"):
-                            skipped_token_limit = generation.get(
-                                "token_limit",
-                                args.api_input_token_limit if args.backend == "api" else args.token_limit,
-                            )
-                            write_started = time.perf_counter()
-                            skipped_f.write(json.dumps({
-                                "record_id": record.record_id,
-                                "source_file": record.source_file,
-                                "source_row_pos": record.source_row_pos,
-                                "fdg_prompt": record.fdg_prompt,
-                                "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
-                                "reason": "prompt_token_overflow",
-                                "prompt_tokens": generation.get("prompt_tokens"),
-                                "token_limit": skipped_token_limit,
-                                "input": {
-                                    "problem": record.problem,
-                                    "raw_cot": record.raw_cot,
-                                },
-                                "extraction": {
-                                    "conversation": list(record.messages),
-                                },
-                            }, ensure_ascii=False) + "\n")
-                            skipped_f.flush()
-                            timing_stats["write_seconds"] += time.perf_counter() - write_started
-                            stats["skipped"] += 1
-                            print(f"  [skip]  {record.record_id} (prompt token overflow)")
-                            continue
-
-                        if generation.get("api_error"):
-                            error_msg = f"API request failed: {generation.get('api_error')}"
-                            conversation = list(record.messages) + [{"role": "assistant", "content": ""}]
-                            if record.retry_count >= args.max_retries:
-                                write_started = time.perf_counter()
-                                failed_f.write(json.dumps({
-                                    "record_id": record.record_id,
-                                    "source_file": record.source_file,
-                                    "source_row_pos": record.source_row_pos,
-                                    "fdg_prompt": record.fdg_prompt,
-                                    "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
-                                    "retry_count": record.retry_count,
-                                    "last_error": error_msg,
-                                    "finish_reason": generation.get("finish_reason"),
-                                    "stop_reason": generation.get("stop_reason"),
-                                    "input": {
-                                        "problem": record.problem,
-                                        "raw_cot": record.raw_cot,
-                                    },
-                                    "extraction": {
-                                        "conversation": conversation,
-                                    },
-                                }, ensure_ascii=False) + "\n")
-                                failed_f.flush()
-                                timing_stats["write_seconds"] += time.perf_counter() - write_started
-                                stats["failed"] += 1
-                                print(
-                                    f"  [fail]  {record.record_id}  "
-                                    f"(API error after {record.retry_count} retries: "
-                                    f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
-                                )
-                                continue
-
-                            retry_started = time.perf_counter()
-                            record.messages = append_error_to_messages(record.messages, "", error_msg)
-                            record.retry_count += 1
-                            pool.appendleft(record)
-                            timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
-                            stats["retried"] += 1
-                            print(
-                                f"  [retry] {record.record_id}  "
-                                f"(API error; attempt {record.retry_count}/{args.max_retries}; "
-                                f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
-                            )
-                            continue
-
-                        if content is None:
-                            content = ""
-                        conversation = list(record.messages) + [{"role": "assistant", "content": content}]
-                        if generation.get("output_truncated"):
-                            error_msg = FDG_OUTPUT_TRUNCATED_RETRY_HINT
-                            if record.retry_count >= args.max_retries:
-                                write_started = time.perf_counter()
-                                failed_f.write(json.dumps({
-                                    "record_id": record.record_id,
-                                    "source_file": record.source_file,
-                                    "source_row_pos": record.source_row_pos,
-                                    "fdg_prompt": record.fdg_prompt,
-                                    "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
-                                    "retry_count": record.retry_count,
-                                    "last_error": error_msg,
-                                    "finish_reason": generation.get("finish_reason"),
-                                    "stop_reason": generation.get("stop_reason"),
-                                    "input": {
-                                        "problem": record.problem,
-                                        "raw_cot": record.raw_cot,
-                                    },
-                                    "extraction": {
-                                        "conversation": conversation,
-                                    },
-                                }, ensure_ascii=False) + "\n")
-                                failed_f.flush()
-                                timing_stats["write_seconds"] += time.perf_counter() - write_started
-                                stats["failed"] += 1
-                                print(f"  [fail]  {record.record_id}  (output truncated after {record.retry_count} retries)")
-                                continue
-
-                            retry_started = time.perf_counter()
-                            record.messages = append_error_to_messages(record.messages, content, error_msg)
-                            record.retry_count += 1
-                            pool.appendleft(record)
-                            timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
-                            stats["retried"] += 1
-                            print(f"  [retry] {record.record_id}  (output truncated; attempt {record.retry_count}/{args.max_retries})")
-                            continue
-
-                        # ── parse + validate ────────────────────────────────
-                        parse_started = time.perf_counter()
-                        result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
-                        parse_seconds = time.perf_counter() - parse_started
-                        timing_stats["parse_validate_seconds"] += parse_seconds
-                        if result.ok:
-                            payload_started = time.perf_counter()
-                            payload = _build_fdg_payload(
-                                record,
-                                result.document,
-                                record.retry_count + 1,
-                                args.include_think_in_dag,
-                                conversation,
-                                list((result.report or {}).get("warnings") or []),
-                            )
-                            payload_seconds = time.perf_counter() - payload_started
-                            timing_stats["payload_build_seconds"] += payload_seconds
-                            write_started = time.perf_counter()
-                            graphs_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                            graphs_f.flush()
-                            write_seconds = time.perf_counter() - write_started
-                            timing_stats["write_seconds"] += write_seconds
-                            stats["ok"] += 1
-                            print(
-                                f"  [ok]    {record.record_id}  "
-                                f"(tries={record.retry_count + 1} "
-                                f"parse={_fmt_seconds(parse_seconds)} "
-                                f"payload={_fmt_seconds(payload_seconds)} "
-                                f"write={_fmt_seconds(write_seconds)})"
-                            )
-                            continue
-
-                        # ── max retries reached ─────────────────────────────
-                        if record.retry_count >= args.max_retries:
-                            write_started = time.perf_counter()
-                            failed_f.write(json.dumps({
-                                "record_id": record.record_id,
-                                "source_file": record.source_file,
-                                "source_row_pos": record.source_row_pos,
-                                "fdg_prompt": record.fdg_prompt,
-                                "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
-                                "retry_count": record.retry_count,
-                                "last_error": result.error_msg,
-                                "input": {
-                                    "problem": record.problem,
-                                    "raw_cot": record.raw_cot,
-                                },
-                                "extraction": {
-                                    "conversation": conversation,
-                                },
-                            }, ensure_ascii=False) + "\n")
-                            failed_f.flush()
-                            timing_stats["write_seconds"] += time.perf_counter() - write_started
-                            stats["failed"] += 1
-                            print(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
-                            continue
-
-                        # ── retry: update messages and put back in pool ─────
-                        retry_started = time.perf_counter()
-                        record.messages = append_error_to_messages(record.messages, content, result.error_msg)
-                        record.retry_count += 1
-                        pool.appendleft(record)   # retries go to the front
-                        timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
-                        stats["retried"] += 1
-                        print(f"  [retry] {record.record_id}  (attempt {record.retry_count}/{args.max_retries})")
+                        result_handler.handle(outputs, record, generation)
 
                     dispatch_next(executor, future_to_batch, worker_id)
     finally:
@@ -1065,6 +1257,7 @@ def main() -> None:
         else:
             for client in llm_pool:
                 client.close()
+        progress.close(stats)
 
     print(
         f"\n[done] ok={stats['ok']}  skipped={stats['skipped']}  "
