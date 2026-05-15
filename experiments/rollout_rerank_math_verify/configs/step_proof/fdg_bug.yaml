@@ -48,7 +48,7 @@ stage1:
   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
   api_concurrency: 16
-  api_timeout: 30
+  api_timeout: 60
   api_max_retries: 3
   api_retry_sleep: 2.0
   api_input_token_limit: 32768
