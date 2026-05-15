@@ -401,6 +401,8 @@ class ExperimentRunner:
             str(self.stage1_dir / "skipped.jsonl"),
             "--failed",
             str(self.stage1_dir / "failed.jsonl"),
+            "--api-pending",
+            str(self.stage1_dir / "api_pending.jsonl"),
             "--backend",
             _cmd_value(_cfg_get(cfg, "backend", "vllm")),
             "--model-path",

@@ -83,6 +83,7 @@ class Stage1OutputFiles:
     graphs: Any
     skipped: Any
     failed: Any
+    api_pending: Any
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +193,36 @@ def load_terminal_ids(path: Path) -> set:
     return terminal
 
 
+def classify_api_error(error_type: Any, error: Any) -> str:
+    text = f"{error_type or ''} {error or ''}".lower()
+    if (
+        "allocationquota.freetieronly" in text
+        or "free tier" in text
+        or "insufficient_quota" in text
+        or "insufficient quota" in text
+        or "balance" in text
+        or ("quota" in text and ("exhaust" in text or "exceeded" in text))
+    ):
+        return "quota_exhausted"
+    if "timeout" in text or "timed out" in text or "readtimeout" in text:
+        return "timeout"
+    if "rate limit" in text or "ratelimit" in text or "429" in text:
+        return "rate_limited"
+    if "authentication" in text or "invalid api key" in text or "unauthorized" in text:
+        return "authentication"
+    if "permissiondenied" in text or "permission denied" in text or "403" in text:
+        return "permission_denied"
+    if "apiconnection" in text or "connection" in text or "network" in text:
+        return "network"
+    if "internalserver" in text or "server error" in text or " 5" in text:
+        return "server_error"
+    return "api_error"
+
+
+def api_error_should_stop_dispatch(reason: str) -> bool:
+    return reason in {"quota_exhausted", "authentication", "permission_denied"}
+
+
 class Stage1Progress:
     """Total record-level progress for Stage 1 terminal outcomes."""
 
@@ -228,6 +259,7 @@ class Stage1Progress:
             "ok": stats.get("ok", 0),
             "skipped": stats.get("skipped", 0),
             "failed": stats.get("failed", 0),
+            "api_pending": stats.get("api_pending", 0),
             "retried": stats.get("retried", 0),
         }
 
@@ -239,7 +271,8 @@ class Stage1Progress:
             f"elapsed={_fmt_seconds(snap['elapsed'])} "
             f"eta={_fmt_seconds(snap['eta']) if snap['completed'] else 'unknown'} "
             f"ok={snap['ok']} skip={snap['skipped']} "
-            f"fail={snap['failed']} retry={snap['retried']}"
+            f"fail={snap['failed']} api_pending={snap['api_pending']} "
+            f"retry={snap['retried']}"
         )
 
     def _line(self, stats: Dict[str, int]) -> str:
@@ -270,7 +303,12 @@ class Stage1Progress:
 class PendingRecordSource:
     """Scans parquet shards and yields Stage 1 records after resume filtering."""
 
-    def __init__(self, args: argparse.Namespace, done_ids: set, log: Any = print) -> None:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        done_ids: set,
+        log: Any = print,
+    ) -> None:
         self.args = args
         self.done_ids = done_ids
         self.log = log
@@ -711,6 +749,7 @@ class Stage1ResultHandler:
         self.timing_stats = timing_stats
         self.progress = progress
         self.log = log
+        self.stop_requested = False
 
     def _write_jsonl(self, fp: Any, payload: Dict[str, Any]) -> None:
         write_started = time.perf_counter()
@@ -767,6 +806,40 @@ class Stage1ResultHandler:
             payload["stop_reason"] = generation.get("stop_reason")
         self._write_jsonl(outputs.failed, payload)
         self._mark_terminal("failed")
+
+    def _write_api_pending(
+        self,
+        outputs: Stage1OutputFiles,
+        record: PendingRecord,
+        reason: str,
+        error_msg: str,
+        generation: Dict[str, Any],
+    ) -> None:
+        payload = {
+            **self._terminal_base_payload(record),
+            "schema_version": "stage1-api-pending-v1",
+            "created_at": _utc_now_iso(),
+            "reason": reason,
+            "retry_count": record.retry_count,
+            "last_error": error_msg,
+            "api_error_type": generation.get("api_error_type"),
+            "api_error": generation.get("api_error"),
+            "api_error_history": generation.get("api_error_history") or [],
+            "finish_reason": generation.get("finish_reason"),
+            "stop_reason": generation.get("stop_reason"),
+            "prompt_tokens": generation.get("prompt_tokens"),
+            "completion_tokens": generation.get("completion_tokens"),
+            "api_attempts": generation.get("api_attempts"),
+            "api_total_seconds": generation.get("api_total_seconds"),
+            "api_request_seconds": generation.get("api_request_seconds"),
+            "api_sleep_seconds": generation.get("api_sleep_seconds"),
+            "input": self._record_input(record),
+            "extraction": {
+                "conversation": list(record.messages),
+            },
+        }
+        self._write_jsonl(outputs.api_pending, payload)
+        self._mark_terminal("api_pending")
 
     def _log_api_timing(self, record: PendingRecord, generation: Dict[str, Any]) -> None:
         api_error = generation.get("api_error")
@@ -837,22 +910,19 @@ class Stage1ResultHandler:
         generation: Dict[str, Any],
     ) -> None:
         error_msg = f"API request failed: {generation.get('api_error')}"
-        conversation = list(record.messages) + [{"role": "assistant", "content": ""}]
-        if record.retry_count >= self.args.max_retries:
-            self._write_failed(outputs, record, error_msg, conversation, generation)
-            self.log(
-                f"  [fail]  {record.record_id}  "
-                f"(API error after {record.retry_count} retries: "
-                f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
-            )
-            return
-
-        self._record_retry(record, "", error_msg)
+        reason = classify_api_error(generation.get("api_error_type"), generation.get("api_error"))
+        self._write_api_pending(outputs, record, reason, error_msg, generation)
         self.log(
-            f"  [retry] {record.record_id}  "
-            f"(API error; attempt {record.retry_count}/{self.args.max_retries}; "
+            f"  [api-pending] {record.record_id}  "
+            f"(reason={reason}; retry={record.retry_count}; "
             f"{generation.get('api_error_type')}: {_one_line(generation.get('api_error'))})"
         )
+        if api_error_should_stop_dispatch(reason):
+            self.stop_requested = True
+            self.log(
+                f"  [api-stop] stopping new Stage1 dispatch after {reason}; "
+                "resume will retry unfinished records."
+            )
 
     def _handle_truncated_output(
         self,
@@ -995,6 +1065,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--failed", type=Path,
                         default=Path(__file__).resolve().parent / "calc_runs" / "failed.jsonl",
                         help="Permanently failed records JSONL")
+    parser.add_argument("--api-pending", type=Path,
+                        default=Path(__file__).resolve().parent / "calc_runs" / "api_pending.jsonl",
+                        help="Non-terminal API/backend failures that should be retried on resume")
     # Resume
     parser.add_argument("--no-resume", action="store_true",
                         help="Ignore existing output and start fresh (overwrite)")
@@ -1099,7 +1172,7 @@ def main() -> None:
             print(f"[resume] includes {len(skipped_ids)} previously skipped record(s)")
 
     # Prepare output dirs
-    for p in (args.out, args.skipped, args.failed):
+    for p in (args.out, args.skipped, args.failed, args.api_pending):
         p.parent.mkdir(parents=True, exist_ok=True)
 
     source = PendingRecordSource(args, done_ids)
@@ -1131,10 +1204,10 @@ def main() -> None:
     refill_pool()
     if not pool:
         print("[done] no pending records.")
-        progress.close({"ok": 0, "skipped": 0, "failed": 0, "retried": 0})
+        progress.close({"ok": 0, "skipped": 0, "failed": 0, "api_pending": 0, "retried": 0})
         return
 
-    stats = {"ok": 0, "skipped": 0, "failed": 0, "retried": 0}
+    stats = {"ok": 0, "skipped": 0, "failed": 0, "api_pending": 0, "retried": 0}
     timing_stats = {
         "setup_seconds": time.perf_counter() - setup_started,
         "dispatch_seconds": 0.0,
@@ -1233,6 +1306,8 @@ def main() -> None:
         future_to_batch: Dict[concurrent.futures.Future, Tuple[int, List[PendingRecord], float]],
         worker_id: int,
     ) -> bool:
+        if result_handler.stop_requested:
+            return False
         dispatch_started = time.perf_counter()
         refill_pool()
         batch = next_batch()
@@ -1264,9 +1339,15 @@ def main() -> None:
             open(args.out, write_mode, encoding="utf-8") as graphs_f,
             open(args.skipped, write_mode, encoding="utf-8") as skipped_f,
             open(args.failed, write_mode, encoding="utf-8") as failed_f,
+            open(args.api_pending, write_mode, encoding="utf-8") as api_pending_f,
             concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor,
         ):
-            outputs = Stage1OutputFiles(graphs=graphs_f, skipped=skipped_f, failed=failed_f)
+            outputs = Stage1OutputFiles(
+                graphs=graphs_f,
+                skipped=skipped_f,
+                failed=failed_f,
+                api_pending=api_pending_f,
+            )
             result_handler = Stage1ResultHandler(
                 args,
                 pool,
@@ -1298,7 +1379,8 @@ def main() -> None:
                         f"\n[worker:{worker_id}] completed batch size={len(batch)} "
                         f"completed_batches={completed_batches} "
                         f"wall={_fmt_seconds(batch_wall_seconds)} "
-                        f"(ok={stats['ok']} skip={stats['skipped']} fail={stats['failed']})"
+                        f"(ok={stats['ok']} skip={stats['skipped']} "
+                        f"fail={stats['failed']} api_pending={stats['api_pending']})"
                     )
 
                     for record, generation in zip(batch, generations):
@@ -1315,14 +1397,16 @@ def main() -> None:
 
     print(
         f"\n[done] ok={stats['ok']}  skipped={stats['skipped']}  "
-        f"failed={stats['failed']}  retried={stats['retried']}"
+        f"failed={stats['failed']}  api_pending={stats['api_pending']}  "
+        f"retried={stats['retried']}"
     )
     print(f"  graphs  → {args.out}")
     print(f"  skipped → {args.skipped}")
     print(f"  failed  → {args.failed}")
+    print(f"  api_pending → {args.api_pending}")
 
     total_seconds = time.perf_counter() - run_started
-    processed = stats["ok"] + stats["skipped"] + stats["failed"]
+    processed = stats["ok"] + stats["skipped"] + stats["failed"] + stats["api_pending"]
     rate = processed / total_seconds if total_seconds > 0 else 0.0
     print(
         "[timing] "
@@ -1340,6 +1424,10 @@ def main() -> None:
         f"write_sum={_fmt_seconds(timing_stats['write_seconds'])} "
         f"retry_prepare_sum={_fmt_seconds(timing_stats['retry_prepare_seconds'])}"
     )
+
+    if stats.get("api_pending", 0) > 0:
+        print(f"[api-pending] events this run={stats['api_pending']}")
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":
