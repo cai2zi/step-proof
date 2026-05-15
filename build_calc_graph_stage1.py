@@ -223,63 +223,6 @@ def api_error_should_stop_dispatch(reason: str) -> bool:
     return reason in {"quota_exhausted", "authentication", "permission_denied"}
 
 
-def _usage_field(obj: Any, *path: str) -> Any:
-    cur = obj
-    for key in path:
-        if cur is None:
-            return None
-        if isinstance(cur, dict):
-            cur = cur.get(key)
-        else:
-            cur = getattr(cur, key, None)
-    return cur
-
-
-def _usage_int(obj: Any, *path: str) -> Optional[int]:
-    value = _usage_field(obj, *path)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _usage_prompt_cache_hit_tokens(usage: Any) -> Optional[int]:
-    """Best-effort extraction across OpenAI-compatible usage schemas."""
-    for path in (
-        ("prompt_tokens_details", "cached_tokens"),
-        ("input_tokens_details", "cached_tokens"),
-        ("prompt_tokens_details", "cache_read_input_tokens"),
-        ("input_tokens_details", "cache_read_input_tokens"),
-        ("cached_tokens",),
-    ):
-        value = _usage_int(usage, *path)
-        if value is not None:
-            return value
-    return None
-
-
-def generation_usage_payload(generation: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not generation:
-        return {}
-    prompt_tokens = generation.get("prompt_tokens")
-    cache_hit_tokens = generation.get("prompt_cache_hit_tokens")
-    payload = {
-        "api_model": generation.get("api_model"),
-        "api_base_url": generation.get("api_base_url"),
-        "api_token_param": generation.get("api_token_param"),
-        "finish_reason": generation.get("finish_reason"),
-        "stop_reason": generation.get("stop_reason"),
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": generation.get("completion_tokens"),
-        "prompt_cache_hit_tokens": cache_hit_tokens,
-    }
-    if isinstance(prompt_tokens, int) and isinstance(cache_hit_tokens, int):
-        payload["prompt_cache_miss_tokens"] = max(0, prompt_tokens - cache_hit_tokens)
-    return {key: value for key, value in payload.items() if value is not None}
-
-
 class Stage1Progress:
     """Total record-level progress for Stage 1 terminal outcomes."""
 
@@ -441,14 +384,7 @@ def _build_fdg_payload(
     include_think_in_dag: bool,
     conversation: List[Dict[str, str]],
     validation_warnings: List[Dict[str, Any]],
-    generation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    extraction = {
-        "conversation": conversation,
-    }
-    usage = generation_usage_payload(generation)
-    if usage:
-        extraction["generation"] = usage
     return {
         "meta": {
             "schema_version": "fdg-v1",
@@ -467,7 +403,9 @@ def _build_fdg_payload(
             "problem": record.problem,
             "raw_cot": record.raw_cot,
         },
-        "extraction": extraction,
+        "extraction": {
+            "conversation": conversation,
+        },
         "graph": {
             "facts": [fact.model_dump() for fact in document.facts],
             "topo_order": fdg_topo_order(document.facts),
@@ -676,10 +614,6 @@ class Stage1APIClient:
         usage = getattr(completion, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage is not None else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
-        prompt_cache_hit_tokens = _usage_prompt_cache_hit_tokens(usage)
-        prompt_cache_miss_tokens = None
-        if isinstance(prompt_tokens, int) and isinstance(prompt_cache_hit_tokens, int):
-            prompt_cache_miss_tokens = max(0, prompt_tokens - prompt_cache_hit_tokens)
         reason_text = str(finish_reason or "").lower()
         return {
             "text": content or "",
@@ -689,8 +623,6 @@ class Stage1APIClient:
             "stop_reason": None,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "prompt_cache_hit_tokens": prompt_cache_hit_tokens,
-            "prompt_cache_miss_tokens": prompt_cache_miss_tokens,
             "api_model": self.model,
             "api_base_url": self.base_url,
             "api_token_param": token_param,
@@ -717,8 +649,6 @@ class Stage1APIClient:
                         "finish_reason": None,
                         "stop_reason": None,
                         "prompt_tokens": prompt_tokens,
-                        "prompt_cache_hit_tokens": None,
-                        "prompt_cache_miss_tokens": None,
                         "token_limit": self.input_token_limit,
                         "token_counter": self.token_counter,
                         "token_count_seconds": token_count_seconds,
@@ -773,8 +703,6 @@ class Stage1APIClient:
                                 "finish_reason": "api_error",
                                 "stop_reason": None,
                                 "prompt_tokens": prompt_tokens,
-                                "prompt_cache_hit_tokens": None,
-                                "prompt_cache_miss_tokens": None,
                                 "token_counter": self.token_counter,
                                 "api_error": last_error,
                                 "api_error_type": type(exc).__name__,
@@ -876,9 +804,6 @@ class Stage1ResultHandler:
         if generation is not None:
             payload["finish_reason"] = generation.get("finish_reason")
             payload["stop_reason"] = generation.get("stop_reason")
-            usage = generation_usage_payload(generation)
-            if usage:
-                payload["generation"] = usage
         self._write_jsonl(outputs.failed, payload)
         self._mark_terminal("failed")
 
@@ -904,8 +829,6 @@ class Stage1ResultHandler:
             "stop_reason": generation.get("stop_reason"),
             "prompt_tokens": generation.get("prompt_tokens"),
             "completion_tokens": generation.get("completion_tokens"),
-            "prompt_cache_hit_tokens": generation.get("prompt_cache_hit_tokens"),
-            "prompt_cache_miss_tokens": generation.get("prompt_cache_miss_tokens"),
             "api_attempts": generation.get("api_attempts"),
             "api_total_seconds": generation.get("api_total_seconds"),
             "api_request_seconds": generation.get("api_request_seconds"),
@@ -929,7 +852,6 @@ class Stage1ResultHandler:
             f"attempts={generation.get('api_attempts')} "
             f"prompt_tokens={generation.get('prompt_tokens')} "
             f"completion_tokens={generation.get('completion_tokens')} "
-            f"cache_hit_tokens={generation.get('prompt_cache_hit_tokens')} "
             f"chars={generation.get('response_chars')}"
             + (
                 f" error_type={generation.get('api_error_type')} "
@@ -1027,7 +949,6 @@ class Stage1ResultHandler:
         conversation: List[Dict[str, str]],
         warnings: List[Dict[str, Any]],
         parse_seconds: float,
-        generation: Dict[str, Any],
     ) -> None:
         payload_started = time.perf_counter()
         payload = _build_fdg_payload(
@@ -1037,7 +958,6 @@ class Stage1ResultHandler:
             self.args.include_think_in_dag,
             conversation,
             warnings,
-            generation,
         )
         payload_seconds = time.perf_counter() - payload_started
         self.timing_stats["payload_build_seconds"] += payload_seconds
@@ -1063,10 +983,9 @@ class Stage1ResultHandler:
         content: str,
         conversation: List[Dict[str, str]],
         error_msg: str,
-        generation: Optional[Dict[str, Any]] = None,
     ) -> None:
         if record.retry_count >= self.args.max_retries:
-            self._write_failed(outputs, record, error_msg, conversation, generation)
+            self._write_failed(outputs, record, error_msg, conversation)
             self.log(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
             return
 
@@ -1112,11 +1031,10 @@ class Stage1ResultHandler:
                 conversation,
                 list((result.report or {}).get("warnings") or []),
                 parse_seconds,
-                generation,
             )
             return
 
-        self._handle_invalid_fdg(outputs, record, content, conversation, result.error_msg, generation)
+        self._handle_invalid_fdg(outputs, record, content, conversation, result.error_msg)
 
 
 # ---------------------------------------------------------------------------
