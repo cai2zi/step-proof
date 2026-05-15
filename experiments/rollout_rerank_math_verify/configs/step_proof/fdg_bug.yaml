@@ -1,6 +1,6 @@
 output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
 name: reduce_prompt
-rollout_name: qwen3_8b_8
+rollout_name: qwen3_8b
 
 exp:
   name: step_proof_results
@@ -26,14 +26,14 @@ stage1:
   limit: -1
 
   # Shared generation settings.
-  max_tokens: 8192
+  max_tokens: 16384
   temperature: 0.0
   top_p: 1.0
   presence_penalty: 0.0
   frequency_penalty: 0.0
   seed: 42
   token_limit: 32768
-  batch_size: 16
+  batch_size: 32
   max_retries: 3
   fdg_prompt: fdg_origin4_reduce
   include_think_in_dag: false
@@ -44,7 +44,7 @@ stage1:
   # Qwen compatible mode:
   #   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   #   api_key_env: DASHSCOPE_API_KEY
-  api_model: qwen3.5-122b-a10b
+  api_model: deepseek-v4-flash
   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
   api_concurrency: 16
@@ -55,12 +55,12 @@ stage1:
 
   # vLLM backend settings.
   model_path: /root/autodl-tmp/models/Qwen3-8B
-  vllm_instances: 2
+  vllm_instances: 4
   parallel_startup: True
   startup_stagger_seconds: 0
   startup_timeout: 1800
   tensor_parallel_size: 1
-  gpus: 0,1
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   top_k: 20
@@ -70,19 +70,19 @@ stage1:
 lean_runtime:
   mathlib_path: /root/autodl-tmp/mathlib4
   lean_backend: persistent_lsp
-  lean_check_concurrency: 32
+  lean_check_concurrency: 64
   lean_worker_pool_size: 0
   lean_temp_dir: lean_jobs_shared
 
 stage2:
-  gpus: 0,1
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
   formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
-  formalizer_instances: 2
-  formalizer_parallel_startup: False
+  formalizer_instances: 4
+  formalizer_parallel_startup: True
   formalizer_startup_stagger_seconds: 0
   formalizer_startup_timeout: 1800
   formalizer_tensor_parallel_size: 1
@@ -102,14 +102,14 @@ stage2:
   limit: -1
 
 stage3:
-  gpus: 0,1
+  gpus: 0,1,2,3
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
   prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
-  prover_instances: 2
-  prover_parallel_startup: False
+  prover_instances: 4
+  prover_parallel_startup: True
   prover_startup_stagger_seconds: 0
   prover_startup_timeout: 1800
   prover_tensor_parallel_size: 1

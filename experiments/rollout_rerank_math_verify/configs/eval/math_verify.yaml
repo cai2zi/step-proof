@@ -1,7 +1,7 @@
 output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
 name: math_verify
 step_proof_name: reduce_prompt
-rollout_name: qwen3_8b_8
+rollout_name: qwen3_8b
 
 env:
   lean4_python: /root/autodl-tmp/env/lean4/bin/python
