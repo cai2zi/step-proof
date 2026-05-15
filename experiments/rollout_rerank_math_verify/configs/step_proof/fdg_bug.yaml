@@ -52,6 +52,7 @@ stage1:
   api_max_retries: 3
   api_retry_sleep: 2.0
   api_input_token_limit: 32768
+  api_tokenizer_path: ${stage1.model_path}
 
   # vLLM backend settings.
   model_path: /root/autodl-tmp/models/Qwen3-8B
