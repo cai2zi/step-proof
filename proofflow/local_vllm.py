@@ -31,6 +31,8 @@ class LocalLLMManager:
 
         self.model_path = model_path
         self.token_limit = token_limit
+        self.max_tokens = max_tokens
+        self.prompt_token_limit = max(0, token_limit - max_tokens)
         self._chat_template_kwargs: Dict[str, Any] = (
             dict(chat_template_kwargs)
             if chat_template_kwargs is not None
@@ -82,7 +84,7 @@ class LocalLLMManager:
 
         for idx, prompt in enumerate(prompts):
             prompt_tokens = self._token_count(prompt)
-            if prompt_tokens > self.token_limit:
+            if prompt_tokens > self.prompt_token_limit:
                 results.append(
                     {
                         "text": None,
@@ -91,6 +93,9 @@ class LocalLLMManager:
                         "finish_reason": None,
                         "stop_reason": None,
                         "prompt_tokens": prompt_tokens,
+                        "prompt_token_limit": self.prompt_token_limit,
+                        "token_limit": self.token_limit,
+                        "max_tokens": self.max_tokens,
                     }
                 )
                 continue
@@ -102,6 +107,9 @@ class LocalLLMManager:
                     "finish_reason": None,
                     "stop_reason": None,
                     "prompt_tokens": prompt_tokens,
+                    "prompt_token_limit": self.prompt_token_limit,
+                    "token_limit": self.token_limit,
+                    "max_tokens": self.max_tokens,
                 }
             )
             valid_indices.append(idx)

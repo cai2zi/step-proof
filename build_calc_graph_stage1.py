@@ -772,7 +772,9 @@ class Stage1ResultHandler:
                 **self._terminal_base_payload(record),
                 "reason": "prompt_token_overflow",
                 "prompt_tokens": generation.get("prompt_tokens"),
+                "prompt_token_limit": generation.get("prompt_token_limit"),
                 "token_limit": skipped_token_limit,
+                "max_tokens": generation.get("max_tokens"),
                 "input": self._record_input(record),
                 "extraction": {
                     "conversation": list(record.messages),
