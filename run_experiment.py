@@ -453,6 +453,7 @@ class ExperimentRunner:
             ("api_max_retries", "--api-max-retries"),
             ("api_retry_sleep", "--api-retry-sleep"),
             ("api_input_token_limit", "--api-input-token-limit"),
+            ("api_tokenizer_path", "--api-tokenizer-path"),
         ]
         for cfg_key, arg_name in api_args:
             value = _cfg_get(cfg, cfg_key, None)

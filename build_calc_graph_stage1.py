@@ -432,6 +432,8 @@ class Stage1APIClient:
         presence_penalty: float,
         frequency_penalty: float,
         input_token_limit: int,
+        tokenizer_path: str,
+        tokenizer_chat_template_kwargs: Optional[Dict[str, Any]],
         timeout: float,
         api_max_retries: int,
         retry_sleep: float,
@@ -445,6 +447,8 @@ class Stage1APIClient:
         self.presence_penalty = presence_penalty
         self.frequency_penalty = frequency_penalty
         self.input_token_limit = input_token_limit
+        self.tokenizer_path = tokenizer_path
+        self.tokenizer_chat_template_kwargs = dict(tokenizer_chat_template_kwargs or {})
         self.timeout = timeout
         self.api_max_retries = max(0, api_max_retries)
         self.retry_sleep = max(0.0, retry_sleep)
@@ -461,6 +465,29 @@ class Stage1APIClient:
                 self._encoding = tiktoken.encoding_for_model(model)
             except Exception:
                 self._encoding = tiktoken.get_encoding("cl100k_base")
+        self._tokenizer = self._load_tokenizer(tokenizer_path)
+        if self._tokenizer is not None:
+            self.token_counter = f"transformers:{tokenizer_path}"
+        elif self._encoding is not None:
+            self.token_counter = "tiktoken"
+        else:
+            self.token_counter = "char_estimate"
+
+    @staticmethod
+    def _load_tokenizer(tokenizer_path: str) -> Any:
+        if not tokenizer_path:
+            return None
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "--api-tokenizer-path requires the transformers package. "
+                "Install transformers or omit --api-tokenizer-path."
+            ) from exc
+        try:
+            return AutoTokenizer.from_pretrained(tokenizer_path)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load tokenizer from {tokenizer_path!r}: {exc}") from exc
 
     def _client(self) -> OpenAI:
         client = getattr(self._local, "client", None)
@@ -475,7 +502,22 @@ class Stage1APIClient:
         return client
 
     def _message_token_count(self, messages: List[Dict[str, str]]) -> int:
-        # This is a conservative local preflight, not the provider's billing count.
+        # Local preflight only; provider billing/context accounting can still differ.
+        if self._tokenizer is not None:
+            try:
+                tokens = self._tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    **self.tokenizer_chat_template_kwargs,
+                )
+                return len(tokens)
+            except Exception:
+                joined = "\n".join(
+                    f"{msg.get('role', '')}: {msg.get('content', '')}" for msg in messages
+                )
+                return len(self._tokenizer.encode(joined, add_special_tokens=False))
+
         total = 0
         for msg in messages:
             content = str(msg.get("content", ""))
@@ -570,6 +612,7 @@ class Stage1APIClient:
                         "stop_reason": None,
                         "prompt_tokens": prompt_tokens,
                         "token_limit": self.input_token_limit,
+                        "token_counter": self.token_counter,
                         "token_count_seconds": token_count_seconds,
                         "api_attempts": 0,
                         "api_request_seconds": 0.0,
@@ -592,6 +635,7 @@ class Stage1APIClient:
                     request_seconds += float(result.get("api_request_seconds") or 0.0)
                     if result.get("prompt_tokens") is None:
                         result["prompt_tokens"] = prompt_tokens
+                    result["token_counter"] = self.token_counter
                     result["token_count_seconds"] = token_count_seconds
                     result["api_attempts"] = attempts
                     result["api_request_seconds"] = request_seconds
@@ -621,6 +665,7 @@ class Stage1APIClient:
                                 "finish_reason": "api_error",
                                 "stop_reason": None,
                                 "prompt_tokens": prompt_tokens,
+                                "token_counter": self.token_counter,
                                 "api_error": last_error,
                                 "api_error_type": type(exc).__name__,
                                 "api_error_history": error_history,
@@ -775,6 +820,7 @@ class Stage1ResultHandler:
                 "prompt_token_limit": generation.get("prompt_token_limit"),
                 "token_limit": skipped_token_limit,
                 "max_tokens": generation.get("max_tokens"),
+                "token_counter": generation.get("token_counter"),
                 "input": self._record_input(record),
                 "extraction": {
                     "conversation": list(record.messages),
@@ -997,6 +1043,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Base sleep seconds between API request retries")
     parser.add_argument("--api-input-token-limit", type=int, default=-1,
                         help="Local input-token preflight limit for API prompts (-1 disables)")
+    parser.add_argument("--api-tokenizer-path", default="",
+                        help="Optional local HF tokenizer path for API prompt token preflight")
     # Batch / retry
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-retries", type=int, default=3)
@@ -1147,7 +1195,9 @@ def main() -> None:
         print(
             f"[init] using API backend model={args.api_model} "
             f"base_url={args.api_base_url} concurrency={args.api_concurrency} "
-            f"input_token_limit={input_token_limit} effective_batch_size={effective_batch_size}"
+            f"input_token_limit={input_token_limit} "
+            f"api_tokenizer_path={args.api_tokenizer_path or '<tiktoken>'} "
+            f"effective_batch_size={effective_batch_size}"
         )
         llm_pool = [
             Stage1APIClient(
@@ -1160,6 +1210,8 @@ def main() -> None:
                 presence_penalty=args.presence_penalty,
                 frequency_penalty=args.frequency_penalty,
                 input_token_limit=input_token_limit,
+                tokenizer_path=args.api_tokenizer_path,
+                tokenizer_chat_template_kwargs=chat_template_kwargs,
                 timeout=args.api_timeout,
                 api_max_retries=args.api_max_retries,
                 retry_sleep=args.api_retry_sleep,
