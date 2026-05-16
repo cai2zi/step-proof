@@ -2,6 +2,6 @@ rollout_config: qwen3_8b
 step_proof_config: fdg_bug
 eval_config: math_verify
 
-rollout_name: qwen3_8b_8
-step_proof_name: reduce_prompt_API
+rollout_name: qwen3_8b_except_gsm8k
+step_proof_name: reduce_prompt_API_prove3
 stage1_backend: api

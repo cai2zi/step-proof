@@ -38,16 +38,13 @@ stage1:
   fdg_prompt: fdg_origin4_reduce
   include_think_in_dag: false
 
-  # API backend settings. OpenAI/ChatGPT:
-  #   api_base_url: https://api.openai.com/v1
-  #   api_key_env: OPENAI_API_KEY   # 此处填「环境变量名」；密钥 export 到该变量，勿把密钥写进 yaml
-  # Qwen compatible mode:
-  #   api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  #   api_key_env: DASHSCOPE_API_KEY
-  api_model: qwen3.5-plus
-  api_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  api_key_env: DASHSCOPE_API_KEY
-  api_concurrency: 8
+  # API backend settings (OpenAI-compatible).
+  #   export POLOAI_API_KEY='sk-...'   # 勿把密钥写进 yaml
+  # PoloAI (https://poloai.top):
+  api_model: gpt-5-mini
+  api_base_url: https://poloai.top/v1
+  api_key_env: POLOAI_API_KEY
+  api_concurrency: 32
   api_timeout: 300
   api_max_retries: 3
   api_retry_sleep: 2.0
@@ -126,7 +123,7 @@ stage3:
   prover_chat_template_kwargs:
     enable_thinking: true
   prover_prompt: prove.paper_goedel_v2
-  prover_retries: 1
+  prover_retries: 0
   prove_batch_size: 128
   limit: -1
 
