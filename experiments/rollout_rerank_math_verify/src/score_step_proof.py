@@ -20,7 +20,9 @@ from common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Score rollout candidates by stage3 proved nodes.")
+    parser = argparse.ArgumentParser(
+        description="Score rollout candidates by stage3 prove success on non-root facts.",
+    )
     parser.add_argument("--config", type=Path, required=True)
     args, overrides = parser.parse_known_args()
     args.overrides = overrides
@@ -33,12 +35,17 @@ def _facts_from_stage3_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     return facts if isinstance(facts, list) else []
 
 
+def _prove_required_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [fact for fact in facts if fact.get("parent_fact_ids")]
+
+
 def _score_facts(facts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    total_nodes = len(facts)
+    prove_facts = _prove_required_facts(facts)
+    prove_required_nodes = len(prove_facts)
     prove_success_nodes = 0
     lean_verify_nodes = 0
     lean_pass_nodes = 0
-    for fact in facts:
+    for fact in prove_facts:
         solved = fact.get("solved_lemma") or {}
         if fact.get("prove_status") == "success":
             prove_success_nodes += 1
@@ -47,11 +54,13 @@ def _score_facts(facts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if solved.get("lean_pass") is True:
             lean_pass_nodes += 1
     return {
-        "total_nodes": total_nodes,
+        "prove_required_nodes": prove_required_nodes,
         "prove_success_nodes": prove_success_nodes,
         "lean_verify_nodes": lean_verify_nodes,
         "lean_pass_nodes": lean_pass_nodes,
-        "success_ratio": prove_success_nodes / total_nodes if total_nodes else 0.0,
+        "success_ratio": (
+            prove_success_nodes / prove_required_nodes if prove_required_nodes else 0.0
+        ),
     }
 
 
@@ -92,7 +101,7 @@ def main() -> None:
         score = scores.get(
             rid,
             {
-                "total_nodes": 0,
+                "prove_required_nodes": 0,
                 "prove_success_nodes": -1,
                 "lean_verify_nodes": -1,
                 "lean_pass_nodes": -1,
@@ -128,7 +137,7 @@ def main() -> None:
                 "score": {
                     key: best[key]
                     for key in (
-                        "total_nodes",
+                        "prove_required_nodes",
                         "prove_success_nodes",
                         "lean_verify_nodes",
                         "lean_pass_nodes",
