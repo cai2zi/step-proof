@@ -158,6 +158,44 @@ def _build_proof_str(rec: JsonDict) -> str:
     return "\n".join(parts)
 
 
+def _text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(value)
+
+
+def _format_conversation(value: Any) -> str:
+    if not isinstance(value, list):
+        return _text_value(value)
+    chunks: List[str] = []
+    for idx, message in enumerate(value, start=1):
+        if isinstance(message, dict):
+            role = str(message.get("role") or f"message_{idx}")
+            content = _text_value(message.get("content"))
+        else:
+            role = f"message_{idx}"
+            content = _text_value(message)
+        chunks.append(f"### {role}\n{content}".rstrip())
+    return "\n\n".join(chunks)
+
+
+def _stage3_items(rec: JsonDict, source: str) -> List[JsonDict]:
+    try:
+        return _extract_nodes(rec, source)
+    except Exception:
+        pass
+    for key in ("results", "graph"):
+        items = rec.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+    return []
+
+
 @dataclass
 class ExperimentStatus:
     name: str
@@ -459,12 +497,34 @@ class StepProofCompareApp:
             "cases": buckets,
         }
 
+    def _rollout_detail_payload(
+        self,
+        exp_name: str,
+        data: ExperimentData,
+        row: JsonDict,
+        selected_rollout_id: Any,
+    ) -> JsonDict:
+        rid = str(row.get("id") or "")
+        ev = data.eval_by_rollout.get(rid, {})
+        rec = self._load_stage3_records(exp_name).get(rid)
+        rollout = _safe_int(row.get("rollout_id"))
+        return {
+            "id": rid,
+            "rollout_id": rollout,
+            "selected": selected_rollout_id == rollout,
+            "stage3_found": isinstance(rec, dict),
+            "score": row,
+            "math_verify": ev,
+            "stage3": rec if isinstance(rec, dict) else None,
+        }
+
     def problem_payload(self, exp_names: List[str], parent_id: str) -> JsonDict:
         exp_names = self._normalize_exp_names(exp_names)
         parent_id = str(parent_id).strip()
         if not parent_id:
             raise ValueError("parent_id is empty")
         tables: Dict[str, JsonDict] = {}
+        analysis_experiments: Dict[str, JsonDict] = {}
         question = ""
         gold = ""
         source = ""
@@ -484,6 +544,7 @@ class StepProofCompareApp:
                         "rank": rank,
                         "id": rid,
                         "success_ratio": row.get("success_ratio", ""),
+                        "prove_required_nodes": row.get("prove_required_nodes", ""),
                         "prove_success_nodes": row.get("prove_success_nodes", ""),
                         "lean_pass_nodes": row.get("lean_pass_nodes", ""),
                         "rollout_id": rollout,
@@ -491,11 +552,22 @@ class StepProofCompareApp:
                         "selected": selected.get("rollout_id") == rollout,
                     }
                 )
+            rollout_details = [
+                self._rollout_detail_payload(name, data, row, selected.get("rollout_id"))
+                for row in sorted(rows, key=lambda item: _safe_int(item.get("rollout_id")))
+            ]
             tables[name] = {
                 "selected": selected,
                 "pass_at_1": data.pass_at_1_by_parent.get(parent_id, False),
                 "pass_at_k": data.pass_at_k_by_parent.get(parent_id, False),
                 "rows": table_rows,
+                "rollouts": rollout_details,
+            }
+            analysis_experiments[name] = {
+                "selected": selected,
+                "pass_at_1": data.pass_at_1_by_parent.get(parent_id, False),
+                "pass_at_k": data.pass_at_k_by_parent.get(parent_id, False),
+                "rollouts": rollout_details,
             }
             question = question or str(rows[0].get("question") or "")
             gold = gold or str(rows[0].get("gold") or "")
@@ -507,6 +579,13 @@ class StepProofCompareApp:
             "gold": gold,
             "exp_names": exp_names,
             "tables": tables,
+            "analysis": {
+                "parent_id": parent_id,
+                "source": source,
+                "question": question,
+                "gold": gold,
+                "experiments": analysis_experiments,
+            },
         }
 
     def render_record_html(self, exp_name: str, record_id: str) -> str:
@@ -735,12 +814,99 @@ HTML_PAGE = r"""<!doctype html>
       border-radius: 8px;
       padding: 10px;
     }
+    .rollout-list { display: grid; gap: 10px; margin-top: 12px; }
+    .rollout-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+    }
+    .rollout-head, .copy-head, .fact-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .copy-block {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 8px;
+      background: #fbfcfe;
+    }
+    .copy-head {
+      background: #f8fafc;
+      border-bottom: 1px solid var(--line);
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .copy-head button { padding: 4px 8px; font-size: 12px; }
+    .copy-block pre {
+      margin: 0;
+      padding: 10px;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    .json-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 12px;
+      background: #fbfcfe;
+    }
+    .json-box textarea {
+      width: 100%;
+      min-height: 62vh;
+      resize: vertical;
+      border: 0;
+      outline: 0;
+      padding: 12px;
+      background: #fbfcfe;
+      white-space: pre;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    .graph-links {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .graph-link-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+    .fact-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      margin-top: 8px;
+      background: #fff;
+    }
+    .fact-detail summary { cursor: pointer; }
+    .fact-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 8px;
+    }
     #viewer { width: 100%; height: 76vh; border: 0; background: #fff; border-radius: 8px; }
     .field-list label { display: inline-flex; gap: 4px; align-items: center; margin: 2px 8px 2px 0; }
     @media (max-width: 900px) {
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .problem-meta { grid-template-columns: 1fr 1fr; }
+      .fact-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -821,6 +987,7 @@ HTML_PAGE = r"""<!doctype html>
     const compareFields = __COMPARE_FIELDS__;
     let currentRoot = "";
     let completeNames = [];
+    let copyBlockCounter = 0;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -828,6 +995,80 @@ HTML_PAGE = r"""<!doctype html>
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replaceAll("'", "&#39;");
+    }
+
+    async function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      area.focus();
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+
+    async function copyBlock(id, button) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const label = button.textContent;
+      try {
+        await copyText(el.value ?? el.textContent ?? "");
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = label; }, 900);
+      } catch (e) {
+        button.textContent = "Failed";
+        setTimeout(() => { button.textContent = label; }, 1200);
+      }
+    }
+
+    function renderCopyBlock(title, value) {
+      const id = `copyBlock${copyBlockCounter++}`;
+      const text = String(value ?? "");
+      return `<div class="copy-block">
+        <div class="copy-head">
+          <span>${escapeHtml(title)}</span>
+          <button onclick="copyBlock('${id}', this)">Copy</button>
+        </div>
+        <pre id="${id}">${escapeHtml(text)}</pre>
+      </div>`;
+    }
+
+    function renderJsonBox(title, value) {
+      const id = `copyBlock${copyBlockCounter++}`;
+      return `<div class="json-box">
+        <div class="copy-head">
+          <span>${escapeHtml(title)}</span>
+          <button onclick="copyBlock('${id}', this)">Copy all</button>
+        </div>
+        <textarea id="${id}" readonly spellcheck="false">${escapeHtml(value)}</textarea>
+      </div>`;
+    }
+
+    function renderGraphLinks(data) {
+      const experiments = (data.analysis || {}).experiments || {};
+      const rows = Object.entries(experiments).map(([name, exp]) => {
+        const links = (exp.rollouts || []).map((rollout) => {
+          const label = `rollout ${rollout.rollout_id}`;
+          if (!rollout.stage3_found) return `<span class="muted">${escapeHtml(label)} missing</span>`;
+          return `<a onclick="renderGraph('${escapeAttr(name)}', '${escapeAttr(rollout.id)}')">${escapeHtml(label)}</a>`;
+        }).join("");
+        return `<div class="graph-link-row">
+          <strong>${escapeHtml(name)}</strong>
+          ${links || `<span class="muted">No graph links.</span>`}
+        </div>`;
+      });
+      if (!rows.length) return "";
+      return `<div class="graph-links">${rows.join("")}</div>`;
     }
 
     function selectedExpNames() {
@@ -971,6 +1212,70 @@ HTML_PAGE = r"""<!doctype html>
       return value ? `<span class="ok">yes</span>` : `<span class="bad">no</span>`;
     }
 
+    function statusMark(value) {
+      const text = String(value ?? "");
+      const lower = text.toLowerCase();
+      if (!text) return `<span class="muted">n/a</span>`;
+      if (lower === "success" || lower === "true") return `<span class="ok">${escapeHtml(text)}</span>`;
+      if (lower === "failed" || lower === "failure" || lower === "false" || lower === "error") return `<span class="bad">${escapeHtml(text)}</span>`;
+      return `<span>${escapeHtml(text)}</span>`;
+    }
+
+    function renderFactDetail(fact, idx) {
+      const parents = Array.isArray(fact.parent_fact_ids) ? fact.parent_fact_ids.join(", ") : String(fact.parent_fact_ids ?? "");
+      const title = `${fact.fact_id || `fact_${idx + 1}`} ${fact.is_final_answer ? "(final)" : ""}`;
+      const open = fact.is_final_answer ? "open" : "";
+      return `<details class="fact-detail" ${open}>
+        <summary>
+          <span class="fact-head">
+            <strong>${escapeHtml(title)}</strong>
+            <span class="muted">origin ${escapeHtml(fact.origin)} / parents ${escapeHtml(parents)} / form ${statusMark(fact.form_status)} / prove ${statusMark(fact.prove_status)}</span>
+          </span>
+        </summary>
+        ${renderCopyBlock("Fact text", fact.text)}
+        ${renderCopyBlock("Proof obligation", fact.proof_obligation)}
+        <div class="fact-grid">
+          <div>
+            <div class="muted" style="margin-top:8px;">formalization lean_pass ${statusMark(fact.formalization_lean_pass)}</div>
+            ${renderCopyBlock("Form Lean", fact.formalization_lean_code)}
+            ${renderCopyBlock("Form conversation", fact.formalization_conversation)}
+            ${fact.formalization_error ? renderCopyBlock("Form error", fact.formalization_error) : ""}
+          </div>
+          <div>
+            <div class="muted" style="margin-top:8px;">prove lean_pass ${statusMark(fact.solved_lemma_lean_pass)} / lean_verify ${statusMark(fact.solved_lemma_lean_verify)}</div>
+            ${renderCopyBlock("Prove Lean", fact.solved_lemma_lean_code)}
+            ${renderCopyBlock("Prove conversation", fact.prove_conversation)}
+            ${fact.solved_lemma_error ? renderCopyBlock("Prove error", fact.solved_lemma_error) : ""}
+          </div>
+        </div>
+      </details>`;
+    }
+
+    function renderRolloutDetail(rollout, expName) {
+      const facts = rollout.facts || [];
+      const title = `rollout ${escapeHtml(rollout.rollout_id)}${rollout.selected ? " / selected" : ""}`;
+      return `<details class="rollout-detail" ${rollout.selected ? "open" : ""}>
+        <summary>
+          <span class="rollout-head">
+            <strong>${title}</strong>
+            <span class="muted">math_verify ${rollout.math_verify_correct ? "correct" : "wrong"} / score ${escapeHtml(rollout.success_ratio)} / proved ${escapeHtml(rollout.prove_success_nodes)}/${escapeHtml(rollout.prove_required_nodes)} / lean_pass ${escapeHtml(rollout.lean_pass_nodes)}</span>
+          </span>
+        </summary>
+        <div class="row" style="margin-top:8px;">
+          <a onclick="renderGraph('${escapeAttr(expName)}', '${escapeAttr(rollout.id)}')">view graph</a>
+          <span class="muted">${rollout.stage3_found ? `${facts.length} stage3 fact(s)` : "stage3 record missing"}</span>
+        </div>
+        ${renderCopyBlock("Rollout result", rollout.answer)}
+        ${facts.length ? facts.map(renderFactDetail).join("") : `<div class="muted" style="margin-top:8px;">No stage3 form/prove detail found.</div>`}
+      </details>`;
+    }
+
+    function renderRolloutDetails(table, expName) {
+      const rollouts = table.rollouts || [];
+      if (!rollouts.length) return `<div class="muted">No rollout details.</div>`;
+      return `<div class="rollout-list">${rollouts.map((rollout) => renderRolloutDetail(rollout, expName)).join("")}</div>`;
+    }
+
     function renderCases(data) {
       const names = data.exp_names || [];
       const titles = {
@@ -1034,7 +1339,7 @@ HTML_PAGE = r"""<!doctype html>
     }
 
     function renderProblem(data) {
-      const tables = data.tables || {};
+      copyBlockCounter = 0;
       const names = data.exp_names || [];
       const meta = `<div class="problem-meta">
         <div><strong>ID</strong><br>${escapeHtml(data.parent_id)}</div>
@@ -1044,31 +1349,8 @@ HTML_PAGE = r"""<!doctype html>
       </div>
       <h2>Question</h2>
       <div class="question">${escapeHtml(data.question)}</div>`;
-      const tableHtml = names.map((name) => {
-        const t = tables[name] || {};
-        const selected = t.selected || {};
-        return `<div class="panel">
-          <div class="case-title">
-            <h2>${escapeHtml(name)}</h2>
-            <span class="muted">pass@1 ${t.pass_at_1 ? "yes" : "no"} / pass@4 ${t.pass_at_k ? "yes" : "no"} / selected rollout ${escapeHtml(selected.rollout_id)} ${selected.is_correct ? "correct" : "wrong"}</span>
-          </div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>rank</th><th>id</th><th>success_ratio</th><th>prove_success_nodes</th><th>lean_pass_nodes</th><th>rollout_id</th><th>math_verify</th><th>selected</th><th>graph</th></tr></thead>
-            <tbody>${(t.rows || []).map((row) => `<tr>
-              <td>${escapeHtml(row.rank)}</td>
-              <td><a onclick="renderGraph('${escapeHtml(name)}', '${escapeHtml(row.id)}')">${escapeHtml(row.id)}</a></td>
-              <td>${escapeHtml(row.success_ratio)}</td>
-              <td>${escapeHtml(row.prove_success_nodes)}</td>
-              <td>${escapeHtml(row.lean_pass_nodes)}</td>
-              <td>${escapeHtml(row.rollout_id)}</td>
-              <td>${boolMark(row.math_verify_correct)}</td>
-              <td>${row.selected ? `<span class="ok">selected</span>` : ""}</td>
-              <td><a onclick="renderGraph('${escapeHtml(name)}', '${escapeHtml(row.id)}')">view</a></td>
-            </tr>`).join("")}</tbody>
-          </table></div>
-        </div>`;
-      }).join("");
-      document.getElementById("problem").innerHTML = meta + tableHtml;
+      const analysisJson = JSON.stringify(data.analysis || {}, null, 2);
+      document.getElementById("problem").innerHTML = meta + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
     }
 
     async function renderGraph(expName, recordId) {
