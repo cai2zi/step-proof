@@ -1,0 +1,7 @@
+rollout_config: qwen3_8b
+step_proof_config: fdg_bug_11
+eval_config: math_verify
+
+rollout_name: cases_reduce_prompt_API_pass4_correct_selected_wrong_all-rollouts
+step_proof_name: reduce_prompt_API_pass4_11
+stage1_backend: api
