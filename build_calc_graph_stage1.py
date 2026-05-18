@@ -75,6 +75,7 @@ class PendingRecord:
     source_row_pos: int
     fdg_prompt: str
     messages: List[Dict[str, str]]
+    raw_messages: List[Dict[str, str]]
     retry_count: int = 0
 
 
@@ -370,6 +371,7 @@ class PendingRecordSource:
                 source_row_pos=pos,
                 fdg_prompt=self.args.fdg_prompt,
                 messages=messages,
+                raw_messages=[dict(message) for message in messages],
             )
 
 
@@ -383,6 +385,7 @@ def _build_fdg_payload(
     tries: int,
     include_think_in_dag: bool,
     conversation: List[Dict[str, str]],
+    conversation_raw: List[Dict[str, str]],
     validation_warnings: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     return {
@@ -405,6 +408,7 @@ def _build_fdg_payload(
         },
         "extraction": {
             "conversation": conversation,
+            "conversation_raw": conversation_raw,
         },
         "graph": {
             "facts": [fact.model_dump() for fact in document.facts],
@@ -434,12 +438,16 @@ def append_error_to_messages(
     messages: List[Dict[str, str]],
     assistant_response: str,
     error_msg: str,
+    *,
+    compact_assistant: bool = True,
 ) -> List[Dict[str, str]]:
     updated = list(messages)
     updated.append(
         {
             "role": "assistant",
-            "content": compact_fdg_response_for_retry(assistant_response),
+            "content": compact_fdg_response_for_retry(assistant_response)
+            if compact_assistant
+            else assistant_response,
         }
     )
     updated.append(
@@ -779,6 +787,12 @@ class Stage1ResultHandler:
     def _record_retry(self, record: PendingRecord, assistant_response: str, error_msg: str) -> None:
         retry_started = time.perf_counter()
         record.messages = append_error_to_messages(record.messages, assistant_response, error_msg)
+        record.raw_messages = append_error_to_messages(
+            record.raw_messages,
+            assistant_response,
+            error_msg,
+            compact_assistant=False,
+        )
         record.retry_count += 1
         self.pool.appendleft(record)
         self.timing_stats["retry_prepare_seconds"] += time.perf_counter() - retry_started
@@ -790,6 +804,7 @@ class Stage1ResultHandler:
         record: PendingRecord,
         error_msg: str,
         conversation: List[Dict[str, str]],
+        conversation_raw: List[Dict[str, str]],
         generation: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload = {
@@ -799,6 +814,7 @@ class Stage1ResultHandler:
             "input": self._record_input(record),
             "extraction": {
                 "conversation": conversation,
+                "conversation_raw": conversation_raw,
             },
         }
         if generation is not None:
@@ -836,6 +852,7 @@ class Stage1ResultHandler:
             "input": self._record_input(record),
             "extraction": {
                 "conversation": list(record.messages),
+                "conversation_raw": list(record.raw_messages),
             },
         }
         self._write_jsonl(outputs.api_pending, payload)
@@ -897,6 +914,7 @@ class Stage1ResultHandler:
                 "input": self._record_input(record),
                 "extraction": {
                     "conversation": list(record.messages),
+                    "conversation_raw": list(record.raw_messages),
                 },
             },
         )
@@ -930,11 +948,12 @@ class Stage1ResultHandler:
         record: PendingRecord,
         content: str,
         conversation: List[Dict[str, str]],
+        conversation_raw: List[Dict[str, str]],
         generation: Dict[str, Any],
     ) -> None:
         error_msg = FDG_OUTPUT_TRUNCATED_RETRY_HINT
         if record.retry_count >= self.args.max_retries:
-            self._write_failed(outputs, record, error_msg, conversation, generation)
+            self._write_failed(outputs, record, error_msg, conversation, conversation_raw, generation)
             self.log(f"  [fail]  {record.record_id}  (output truncated after {record.retry_count} retries)")
             return
 
@@ -947,6 +966,7 @@ class Stage1ResultHandler:
         record: PendingRecord,
         document: FDGDocument,
         conversation: List[Dict[str, str]],
+        conversation_raw: List[Dict[str, str]],
         warnings: List[Dict[str, Any]],
         parse_seconds: float,
     ) -> None:
@@ -957,6 +977,7 @@ class Stage1ResultHandler:
             record.retry_count + 1,
             self.args.include_think_in_dag,
             conversation,
+            conversation_raw,
             warnings,
         )
         payload_seconds = time.perf_counter() - payload_started
@@ -982,10 +1003,11 @@ class Stage1ResultHandler:
         record: PendingRecord,
         content: str,
         conversation: List[Dict[str, str]],
+        conversation_raw: List[Dict[str, str]],
         error_msg: str,
     ) -> None:
         if record.retry_count >= self.args.max_retries:
-            self._write_failed(outputs, record, error_msg, conversation)
+            self._write_failed(outputs, record, error_msg, conversation, conversation_raw)
             self.log(f"  [fail]  {record.record_id}  (after {record.retry_count} retries)")
             return
 
@@ -1013,10 +1035,13 @@ class Stage1ResultHandler:
         content = generation.get("text")
         if content is None:
             content = ""
-        conversation = list(record.messages) + [{"role": "assistant", "content": content}]
+        conversation = list(record.messages) + [
+            {"role": "assistant", "content": compact_fdg_response_for_retry(content)}
+        ]
+        conversation_raw = list(record.raw_messages) + [{"role": "assistant", "content": content}]
 
         if generation.get("output_truncated"):
-            self._handle_truncated_output(outputs, record, content, conversation, generation)
+            self._handle_truncated_output(outputs, record, content, conversation, conversation_raw, generation)
             return
 
         parse_started = time.perf_counter()
@@ -1029,12 +1054,13 @@ class Stage1ResultHandler:
                 record,
                 result.document,
                 conversation,
+                conversation_raw,
                 list((result.report or {}).get("warnings") or []),
                 parse_seconds,
             )
             return
 
-        self._handle_invalid_fdg(outputs, record, content, conversation, result.error_msg)
+        self._handle_invalid_fdg(outputs, record, content, conversation, conversation_raw, result.error_msg)
 
 
 # ---------------------------------------------------------------------------

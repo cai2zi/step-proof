@@ -322,12 +322,15 @@ class FDGStage3Runner:
                         fact,
                         prompt_name=self.args.prover_prompt,
                     )
+                if not fact.get("prove_messages_raw"):
+                    fact["prove_messages_raw"] = copy.deepcopy(fact["prove_messages"])
                 attempt_num = int(fact.get("prove_retries_used", 0)) + 1
                 tasks.append(
                     {
                         "record_id": record_id,
                         "fact_id": fact_id,
                         "messages": copy.deepcopy(fact["prove_messages"]),
+                        "raw_messages": copy.deepcopy(fact["prove_messages_raw"]),
                         "attempt_num": attempt_num,
                     }
                 )
@@ -348,6 +351,8 @@ class FDGStage3Runner:
             attempt_num = task["attempt_num"]
             conversation = copy.deepcopy(task["messages"])
             conversation.append({"role": "assistant", "content": result.get("lean_code") or ""})
+            conversation_raw = copy.deepcopy(task.get("raw_messages") or task["messages"])
+            conversation_raw.append({"role": "assistant", "content": generation.get("text") or ""})
             if result["kind"] == "validated":
                 payload = {
                     "lean_code": result["lean_code"],
@@ -356,6 +361,7 @@ class FDGStage3Runner:
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
                     "conversation": conversation,
+                    "conversation_raw": conversation_raw,
                 }
                 success = bool(result["lean_verify"])
                 retry_error = f"Lean error/warnings: {result['error_msg']}"
@@ -367,6 +373,7 @@ class FDGStage3Runner:
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
                     "conversation": conversation,
+                    "conversation_raw": conversation_raw,
                 }
                 success = False
                 retry_error = f"Error: {result['error_msg']}"
@@ -380,7 +387,14 @@ class FDGStage3Runner:
             else:
                 fact["prove_status"] = "pending"
                 fact["prove_messages"] = conversation
+                fact["prove_messages_raw"] = conversation_raw
                 fact["prove_messages"].append(
+                    {
+                        "role": "user",
+                        "content": retry_error + "\n\n Based on these errors, please correct the previous response. ",
+                    }
+                )
+                fact["prove_messages_raw"].append(
                     {
                         "role": "user",
                         "content": retry_error + "\n\n Based on these errors, please correct the previous response. ",

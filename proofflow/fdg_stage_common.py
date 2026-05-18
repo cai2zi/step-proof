@@ -36,6 +36,7 @@ def fdg_empty_solver(skipped: bool = False) -> JsonDict:
         "lean_verify": False,
         "error_msg": [],
         "tries": 0,
+        "conversation_raw": [],
     }
     if skipped:
         payload["skipped"] = True
@@ -240,6 +241,7 @@ def fdg_stage3_checkpoint_payload(record: RecordState) -> JsonDict:
                 "prove_status": fact.get("prove_status", "skipped"),
                 "prove_retries_used": int(fact.get("prove_retries_used", 0)),
                 "prove_messages": fact.get("prove_messages") or [],
+                "prove_messages_raw": fact.get("prove_messages_raw") or [],
                 "solved_lemma": fact.get("solved_lemma") or fdg_empty_solver(skipped=True),
             }
             for fact_id, fact in record["facts"].items()
@@ -338,6 +340,7 @@ def fresh_fdg_stage3_record_state(raw: JsonDict) -> RecordState:
         state = dict(fact)
         state["prove_retries_used"] = 0
         state["prove_messages"] = []
+        state["prove_messages_raw"] = []
         state["_prove_enqueued"] = False
         if not list(state.get("parent_fact_ids") or []):
             state["prove_status"] = "skipped"
