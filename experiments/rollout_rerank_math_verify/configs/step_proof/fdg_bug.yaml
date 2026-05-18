@@ -114,8 +114,8 @@ stage3:
   prover_startup_stagger_seconds: 0
   prover_startup_timeout: 1800
   prover_tensor_parallel_size: 1
-  prover_max_tokens: 24576
-  prover_token_limit: 32768
+  prover_max_tokens: 4096
+  prover_token_limit: 8192
   prover_temperature: 0.0
   prover_top_p: 1.0
   prover_presence_penalty: 0.0
