@@ -539,15 +539,19 @@ class StepProofCompareApp:
                 rid = str(row.get("id") or "")
                 ev = data.eval_by_rollout.get(rid, {})
                 rollout = _safe_int(row.get("rollout_id"))
+                prove_required_nodes = row.get("prove_required_nodes")
+                if prove_required_nodes in (None, ""):
+                    prove_required_nodes = row.get("total_nodes", "")
                 table_rows.append(
                     {
                         "rank": rank,
                         "id": rid,
                         "success_ratio": row.get("success_ratio", ""),
-                        "prove_required_nodes": row.get("prove_required_nodes", ""),
+                        "prove_required_nodes": prove_required_nodes,
                         "prove_success_nodes": row.get("prove_success_nodes", ""),
                         "lean_pass_nodes": row.get("lean_pass_nodes", ""),
                         "rollout_id": rollout,
+                        "math_verify_skipped": not bool(ev),
                         "math_verify_correct": _to_bool_correct(ev.get("is_correct")),
                         "selected": selected.get("rollout_id") == rollout,
                     }
@@ -844,6 +848,9 @@ HTML_PAGE = r"""<!doctype html>
       border-radius: 8px;
       padding: 10px;
     }
+    .selected-row { background: #f0fdf4; }
+    .rollout-summary { margin-top: 12px; }
+    .rollout-summary h3 { margin: 14px 0 8px; font-size: 15px; }
     .rollout-list { display: grid; gap: 10px; margin-top: 12px; }
     .rollout-detail {
       border: 1px solid var(--line);
@@ -1103,6 +1110,47 @@ HTML_PAGE = r"""<!doctype html>
       });
       if (!rows.length) return "";
       return `<div class="graph-links">${rows.join("")}</div>`;
+    }
+
+    function renderRolloutSummaryTables(data) {
+      const tables = data.tables || {};
+      const names = data.exp_names || Object.keys(tables);
+      const blocks = names.map((name) => {
+        const table = tables[name] || {};
+        const rows = table.rows || [];
+        if (!rows.length) {
+          return `<div class="rollout-summary">
+            <h3>${escapeHtml(name)}</h3>
+            <div class="muted">No rollout rows.</div>
+          </div>`;
+        }
+        return `<div class="rollout-summary">
+          <h3>${escapeHtml(name)}</h3>
+          <div class="table-wrap"><table>
+            <thead><tr>
+              <th>Rank</th>
+              <th>Rollout</th>
+              <th>Selected</th>
+              <th>success_ratio</th>
+              <th>prove_success_nodes</th>
+              <th>prove_required_nodes</th>
+              <th>Skip math verify</th>
+              <th>Math verify</th>
+            </tr></thead>
+            <tbody>${rows.map((row) => `<tr class="${row.selected ? "selected-row" : ""}">
+              <td>${escapeHtml(row.rank)}</td>
+              <td><a onclick="renderGraph('${escapeAttr(name)}', '${escapeAttr(row.id)}')">${escapeHtml(row.rollout_id)}</a></td>
+              <td>${boolMark(row.selected)}</td>
+              <td>${escapeHtml(row.success_ratio)}</td>
+              <td>${escapeHtml(row.prove_success_nodes)}</td>
+              <td>${escapeHtml(row.prove_required_nodes)}</td>
+              <td>${row.math_verify_skipped ? `<span class="warn">yes</span>` : `<span class="ok">no</span>`}</td>
+              <td>${row.math_verify_skipped ? `<span class="muted">n/a</span>` : boolMark(row.math_verify_correct)}</td>
+            </tr>`).join("")}</tbody>
+          </table></div>
+        </div>`;
+      });
+      return blocks.length ? `<h2>Rollouts</h2>${blocks.join("")}` : "";
     }
 
     function selectedExpNames() {
@@ -1384,7 +1432,7 @@ HTML_PAGE = r"""<!doctype html>
       <h2>Question</h2>
       <div class="question">${escapeHtml(data.question)}</div>`;
       const analysisJson = JSON.stringify(data.analysis || {}, null, 2);
-      document.getElementById("problem").innerHTML = meta + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
+      document.getElementById("problem").innerHTML = meta + renderRolloutSummaryTables(data) + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
     }
 
     async function renderGraph(expName, recordId) {
