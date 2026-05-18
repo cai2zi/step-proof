@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        default=80,
+        default=-1,
         help="Max cases kept per bucket after sorting, matching the viewer default. Use -1 for no limit.",
     )
     parser.add_argument(
