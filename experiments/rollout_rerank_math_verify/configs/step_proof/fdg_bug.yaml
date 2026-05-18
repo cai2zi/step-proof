@@ -24,6 +24,8 @@ stage1:
   question_column: question
   response_column: response
   limit: -1
+  reuse_from_step_proof: null
+  reuse_require_all: true
 
   # Shared generation settings.
   max_tokens: 16384 # output tokens
