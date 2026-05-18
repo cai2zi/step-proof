@@ -619,6 +619,36 @@ class StepProofCompareApp:
                 )
         return out_path.read_text(encoding="utf-8")
 
+    def graph_record_payload(self, exp_name: str, record_id: str) -> JsonDict:
+        exp_name = str(exp_name).strip()
+        record_id = str(record_id).strip()
+        if not exp_name:
+            raise ValueError("exp_name is empty")
+        if not record_id:
+            raise ValueError("record_id is empty")
+        rec = self._load_stage3_records(exp_name).get(record_id)
+        if rec is None:
+            raise KeyError(f"record_id not found in {exp_name}: {record_id}")
+        data = self._load_data(exp_name)
+        score = data.scores_by_id.get(record_id, {})
+        eval_row = data.eval_by_rollout.get(record_id, {})
+        parent_id = _parent_id({"id": record_id})
+        selected = data.selected_eval_by_parent.get(parent_id, {})
+        return {
+            "experiment": exp_name,
+            "record_id": record_id,
+            "parent_id": parent_id,
+            "source": score.get("source") or eval_row.get("source") or data.parent_source.get(parent_id, ""),
+            "question": score.get("question", ""),
+            "gold": score.get("gold") or eval_row.get("gold", ""),
+            "rollout_id": _rollout_id({"id": record_id}),
+            "response": score.get("response", ""),
+            "score": score,
+            "math_verify": eval_row,
+            "selected_by_step_proof": _rollout_id(selected) == _rollout_id({"id": record_id}),
+            "stage3": rec,
+        }
+
     def render_compare_html(
         self,
         exp_names: List[str],
@@ -975,7 +1005,10 @@ HTML_PAGE = r"""<!doctype html>
         <div class="panel">
           <div class="case-title">
             <h2>Graph visualization</h2>
-            <span id="graphStatus" class="muted"></span>
+            <div class="row">
+              <button id="copyGraphJsonBtn" disabled>Copy current JSON</button>
+              <span id="graphStatus" class="muted"></span>
+            </div>
           </div>
           <iframe id="viewer" title="stage3 graph"></iframe>
         </div>
@@ -988,6 +1021,7 @@ HTML_PAGE = r"""<!doctype html>
     let currentRoot = "";
     let completeNames = [];
     let copyBlockCounter = 0;
+    let currentGraphJson = "";
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1370,6 +1404,8 @@ HTML_PAGE = r"""<!doctype html>
           body: formBody({root: currentRoot, exp_name: exp, record_id: record}),
         });
         document.getElementById("viewer").srcdoc = data.html;
+        currentGraphJson = JSON.stringify(data.record || {}, null, 2);
+        document.getElementById("copyGraphJsonBtn").disabled = !currentGraphJson;
         setTab("graphTab");
         document.getElementById("graphStatus").textContent = `${exp} / ${record}`;
       } catch (e) {
@@ -1394,6 +1430,8 @@ HTML_PAGE = r"""<!doctype html>
           body: formBody({root: currentRoot, exp_names: names.join(","), record_id: record, compare_fields: fields.join(",")}),
         });
         document.getElementById("viewer").srcdoc = data.html;
+        currentGraphJson = "";
+        document.getElementById("copyGraphJsonBtn").disabled = true;
         setTab("graphTab");
         document.getElementById("graphStatus").textContent = `${names.join(", ")} / ${record}`;
       } catch (e) {
@@ -1408,6 +1446,18 @@ HTML_PAGE = r"""<!doctype html>
     document.getElementById("openProblemBtn").addEventListener("click", () => openProblem(""));
     document.getElementById("renderBtn").addEventListener("click", () => renderGraph("", ""));
     document.getElementById("compareGraphBtn").addEventListener("click", compareGraph);
+    document.getElementById("copyGraphJsonBtn").addEventListener("click", async (e) => {
+      const button = e.currentTarget;
+      const label = button.textContent;
+      try {
+        await copyText(currentGraphJson || "{}");
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = label; }, 900);
+      } catch (err) {
+        button.textContent = "Failed";
+        setTimeout(() => { button.textContent = label; }, 1200);
+      }
+    });
     document.getElementById("parentInput").addEventListener("keydown", (e) => { if (e.key === "Enter") openProblem(""); });
     document.getElementById("recordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") renderGraph("", ""); });
 
@@ -1500,7 +1550,8 @@ def create_handler(app: StepProofCompareApp):
                     exp_name = (form.get("exp_name") or [""])[0].strip()
                     record_id = (form.get("record_id") or [""])[0].strip()
                     html = app.render_record_html(exp_name, record_id)
-                    _json_response(self, HTTPStatus.OK, {"html": html})
+                    record = app.graph_record_payload(exp_name, record_id)
+                    _json_response(self, HTTPStatus.OK, {"html": html, "record": record})
                     return
                 exp_names = _split_csv((form.get("exp_names") or [""])[0])
                 record_id = (form.get("record_id") or [""])[0].strip()

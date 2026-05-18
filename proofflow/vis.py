@@ -171,7 +171,15 @@ def create_interactive_visualization(
         # Determine contour color based on lean verification status
         contour_color = '#fa2c07'  # Default grey
         
-        if node_type in ['condition', 'definition']:
+        skipped = (
+            info.get('form_status') == 'skipped'
+            or info.get('prove_status') == 'skipped'
+            or info.get('formalization', {}).get('skipped') is True
+            or info.get('solved_lemma', {}).get('skipped') is True
+        )
+        if skipped:
+            contour_color = '#000000'
+        elif node_type in ['condition', 'definition']:
             # For theorem conditions and definitions, only check formalization.lean_pass
             if info.get('formalization', {}).get('lean_pass', False):
                 contour_color = '#00ff00'  # Green
