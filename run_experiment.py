@@ -76,6 +76,10 @@ def _stage1_done_count(graphs_jsonl: Path) -> int:
     return _count_jsonl(graphs_jsonl)
 
 
+def _jsonl_record_id(payload: JsonDict) -> str:
+    return str(payload.get("record_id") or (payload.get("meta") or {}).get("record_id") or "").strip()
+
+
 def _write_json(path: Path, payload: JsonDict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -468,6 +472,190 @@ class ExperimentRunner:
             cmd.append("--no-resume")
         return cmd
 
+    def _stage1_requested_ids(self) -> List[str]:
+        import pandas as pd
+
+        cfg = self.cfg.stage1
+        parquet_dir = _as_path(self.repo_root, _cmd_value(cfg.parquet_dir))
+        glob_pat = _cmd_value(cfg.parquet_glob)
+        id_column = _cmd_value(cfg.id_column)
+        limit = int(cfg.limit)
+
+        ids: List[str] = []
+        seen: set[str] = set()
+        for fp in sorted(parquet_dir.glob(glob_pat)):
+            if not fp.is_file():
+                continue
+            df = pd.read_parquet(fp)
+            if id_column not in df.columns:
+                raise RuntimeError(f"{fp}: missing id column {id_column!r}; have {list(df.columns)}")
+            for value in df[id_column].tolist():
+                rid = str(value).strip()
+                if not rid or rid in seen:
+                    continue
+                ids.append(rid)
+                seen.add(rid)
+                if limit >= 0 and len(ids) >= limit:
+                    return ids
+        if not ids:
+            raise RuntimeError(f"No stage1 input ids found under {parquet_dir} with glob {glob_pat!r}.")
+        return ids
+
+    def _step_proof_results_dir_from_name(self, name: str) -> Path:
+        normalized = name if name.startswith("step_proof_") else f"step_proof_{name}"
+        step_proofs_root = self.exp_dir.parent.parent
+        base = step_proofs_root / normalized
+        preferred = base / str(self.cfg.exp.name)
+        if preferred.is_dir():
+            return preferred
+        fallback = base / "step_proof_results"
+        if fallback.is_dir():
+            return fallback
+        return preferred
+
+    def _filter_jsonl_by_record_id(
+        self,
+        *,
+        src: Path,
+        dst: Path,
+        wanted_ids: set[str],
+        order: Dict[str, int],
+    ) -> tuple[int, set[str]]:
+        if not src.is_file():
+            dst.write_text("", encoding="utf-8")
+            return 0, set()
+
+        rows_by_id: Dict[str, str] = {}
+        with src.open(encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"{src}:{line_no}: invalid JSON: {exc}") from exc
+                rid = _jsonl_record_id(payload)
+                if rid in wanted_ids and rid not in rows_by_id:
+                    rows_by_id[rid] = stripped
+
+        matched_ids = set(rows_by_id)
+        ordered_rows = [
+            rows_by_id[rid]
+            for rid in sorted(matched_ids, key=lambda item: order.get(item, 10**12))
+        ]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(("\n".join(ordered_rows) + "\n") if ordered_rows else "", encoding="utf-8")
+        return len(ordered_rows), matched_ids
+
+    def _run_stage1_reuse(self, reuse_name: str) -> None:
+        log_path = self.logs_dir / "stage1.log"
+        started_at = _utc_now_iso()
+        started_perf = time.perf_counter()
+        stream_to_console = bool(self.cfg.run.stream_logs_to_console)
+        cmd = [
+            "reuse-stage1",
+            f"--from-step-proof={reuse_name}",
+            f"--parquet-dir={_cmd_value(self.cfg.stage1.parquet_dir)}",
+            f"--glob={_cmd_value(self.cfg.stage1.parquet_glob)}",
+        ]
+        self._update_status(
+            "stage1",
+            {
+                "command": cmd,
+                "log_path": str(log_path),
+                "started_at": started_at,
+                "exit_code": None,
+            },
+        )
+
+        result_code = 0
+        with open(log_path, "w", encoding="utf-8") as log_f:
+            cmd_line = "$ " + " ".join(cmd)
+            log_f.write(cmd_line + "\n\n")
+            log_f.flush()
+            if stream_to_console:
+                print(f"[stage1] {cmd_line}", flush=True)
+            tee = _TeeStream(log_f, sys.__stdout__ if stream_to_console else None)
+            try:
+                with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                    self._reuse_stage1_outputs(reuse_name)
+            except Exception:
+                result_code = 1
+                with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                    traceback.print_exc()
+                raise
+            finally:
+                tee.flush()
+                self._finalize_stage_status("stage1", cmd, log_path, started_at, started_perf, result_code)
+
+    def _reuse_stage1_outputs(self, reuse_name: str) -> None:
+        requested_ids = self._stage1_requested_ids()
+        wanted_ids = set(requested_ids)
+        order = {rid: idx for idx, rid in enumerate(requested_ids)}
+        source_exp_dir = self._step_proof_results_dir_from_name(reuse_name)
+        source_stage1_dir = source_exp_dir / "result_stage1"
+        if not source_stage1_dir.is_dir():
+            raise RuntimeError(f"source stage1 directory not found: {source_stage1_dir}")
+
+        files = {
+            "graphs": "graphs.jsonl",
+            "skipped": "skipped.jsonl",
+            "failed": "failed.jsonl",
+            "api_pending": "api_pending.jsonl",
+        }
+        counts: Dict[str, int] = {}
+        matched_by_file: Dict[str, List[str]] = {}
+        all_matched: set[str] = set()
+        for label, filename in files.items():
+            count, matched = self._filter_jsonl_by_record_id(
+                src=source_stage1_dir / filename,
+                dst=self.stage1_dir / filename,
+                wanted_ids=wanted_ids,
+                order=order,
+            )
+            counts[label] = count
+            matched_by_file[label] = sorted(matched, key=lambda item: order.get(item, 10**12))
+            all_matched.update(matched)
+
+        missing = [rid for rid in requested_ids if rid not in all_matched]
+        require_all = bool(_cfg_get(self.cfg.stage1, "reuse_require_all", True))
+        manifest = {
+            "schema_version": "stage1-reuse-v1",
+            "created_at": _utc_now_iso(),
+            "reuse_from_step_proof": reuse_name,
+            "source_exp_dir": str(source_exp_dir),
+            "source_stage1_dir": str(source_stage1_dir),
+            "current_stage1_dir": str(self.stage1_dir),
+            "current_parquet_dir": _cmd_value(self.cfg.stage1.parquet_dir),
+            "current_parquet_glob": _cmd_value(self.cfg.stage1.parquet_glob),
+            "id_column": _cmd_value(self.cfg.stage1.id_column),
+            "requested_ids": len(requested_ids),
+            "counts": counts,
+            "matched_ids": {key: len(value) for key, value in matched_by_file.items()},
+            "missing_count": len(missing),
+            "missing_ids": missing[:200],
+            "require_all": require_all,
+        }
+        _write_json(self.stage1_dir / "reuse_manifest.json", manifest)
+
+        print(
+            "[stage1-reuse] "
+            f"from={source_stage1_dir} requested={len(requested_ids)} "
+            f"graphs={counts['graphs']} skipped={counts['skipped']} "
+            f"failed={counts['failed']} api_pending={counts['api_pending']} "
+            f"missing={len(missing)}",
+            flush=True,
+        )
+        print(f"[stage1-reuse] manifest -> {self.stage1_dir / 'reuse_manifest.json'}", flush=True)
+
+        if missing and require_all:
+            preview = "\n  ".join(missing[:20])
+            raise RuntimeError(
+                "stage1 reuse source is missing requested ids. "
+                f"missing={len(missing)} first ids:\n  {preview}"
+            )
+
     def _build_stage2_cmd(self) -> List[str]:
         cfg = self.cfg.stage2
         lean_cfg = self._shared_lean_cfg()
@@ -732,6 +920,11 @@ class ExperimentRunner:
 
     def run_stage1(self) -> None:
         cfg = self.cfg.stage1
+        reuse_name = str(_cfg_get(cfg, "reuse_from_step_proof", "") or "").strip()
+        if reuse_name:
+            self._run_stage1_reuse(reuse_name)
+            return
+
         graphs_out = self.stage1_dir / "graphs.jsonl"
         requested_limit = int(cfg.limit)
         effective_limit = requested_limit
