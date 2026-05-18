@@ -402,6 +402,30 @@ def write_jsonl(path: Path, rows: Iterable[JsonDict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def flat_to_rollout_raw(rows: pd.DataFrame) -> list[JsonDict]:
+    if rows.empty:
+        return []
+    raw_rows: list[JsonDict] = []
+    sortable = rows.copy()
+    sortable["_rollout_sort"] = pd.to_numeric(sortable["rollout_id"], errors="coerce")
+    sortable = sortable.sort_values(["parent_id", "_rollout_sort", "id"], kind="stable")
+    for parent_id, group in sortable.groupby("parent_id", sort=True):
+        first = group.iloc[0]
+        raw: JsonDict = {
+            "id": str(parent_id),
+            "source": first.get("source", ""),
+            "question": first.get("question", ""),
+            "gold": first.get("gold", ""),
+        }
+        for row in group.to_dict("records"):
+            rollout_id = int(row["rollout_id"])
+            raw[f"response_{rollout_id}"] = row.get("response", "")
+            if "finish_reason" in row:
+                raw[f"finish_reason_{rollout_id}"] = row.get("finish_reason")
+        raw_rows.append(raw)
+    return raw_rows
+
+
 def write_rollout_dir(
     *,
     out_root: Path,
@@ -413,15 +437,29 @@ def write_rollout_dir(
     out_dir = out_root / rollout_dir_name(out_name)
     parquet_path = out_dir / "rollout_flat.parquet"
     jsonl_path = out_dir / "rollout_flat.jsonl"
+    raw_path = out_dir / "rollout_raw.jsonl"
     manifest_path = out_dir / "case_manifest.json"
-    if out_dir.exists() and not force and (parquet_path.exists() or jsonl_path.exists()):
+    if out_dir.exists() and not force and (parquet_path.exists() or jsonl_path.exists() or raw_path.exists()):
         raise SystemExit(f"output already exists: {out_dir} (pass --force to overwrite)")
     out_dir.mkdir(parents=True, exist_ok=True)
     rows.to_parquet(parquet_path, index=False)
     row_dicts = rows.to_dict("records")
     write_jsonl(jsonl_path, row_dicts)
+    raw_rows = flat_to_rollout_raw(rows)
+    write_jsonl(raw_path, raw_rows)
     manifest_path.write_text(
-        json.dumps({**manifest, "rows": len(row_dicts), "ids": [str(row["id"]) for row in row_dicts]}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            {
+                **manifest,
+                "rows": len(row_dicts),
+                "raw_rows": len(raw_rows),
+                "ids": [str(row["id"]) for row in row_dicts],
+                "parent_ids_in_raw": [str(row["id"]) for row in raw_rows],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return out_dir
