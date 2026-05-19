@@ -34,6 +34,7 @@ COMPARE_FIELD_OPTIONS = [
     ("formalization.lean_code", "Formalization Lean"),
     ("formalization.dependency_context_block", "Context block"),
     ("solved_lemma.lean_code", "Solved lemma Lean"),
+    ("solved_lemma.conversation_raw", "Prove conversation raw"),
 ]
 REQUIRED_FILES = [
     "scores.jsonl",
@@ -820,45 +821,10 @@ class StepProofCompareApp:
             )
         return record_ids
 
-    def _fixed_dag_positions(self, graph: Any) -> Dict[str, JsonDict]:
-        nodes = sorted([str(node) for node in graph.nodes()], key=_node_sort_key)
-        indegree = {node: int(graph.in_degree(node)) for node in nodes}
-        level = {node: 0 for node in nodes}
-        queue = [node for node in nodes if indegree[node] == 0]
-        ordered: List[str] = []
-        while queue:
-            node = queue.pop(0)
-            ordered.append(node)
-            for succ in sorted([str(item) for item in graph.successors(node)], key=_node_sort_key):
-                level[succ] = max(level.get(succ, 0), level[node] + 1)
-                indegree[succ] -= 1
-                if indegree[succ] == 0:
-                    queue.append(succ)
-                    queue.sort(key=_node_sort_key)
-        if len(ordered) != len(nodes):
-            ordered = nodes
-            level = {node: idx for idx, node in enumerate(nodes)}
-
-        by_level: Dict[int, List[str]] = {}
-        for node in nodes:
-            by_level.setdefault(level.get(node, 0), []).append(node)
-        positions: Dict[str, JsonDict] = {}
-        for depth in sorted(by_level):
-            layer = sorted(by_level[depth], key=_node_sort_key)
-            mid = (len(layer) - 1) / 2.0
-            for idx, node in enumerate(layer):
-                positions[node] = {
-                    "x": int((idx - mid) * 190),
-                    "y": int(depth * 155),
-                    "fixed": True,
-                }
-        return positions
-
     def _vis_graph_payload(
         self,
         graph: Any,
         node_info: Dict[str, JsonDict],
-        positions: Dict[str, JsonDict],
     ) -> JsonDict:
         nodes_data: List[JsonDict] = []
         edges_data: List[JsonDict] = []
@@ -892,16 +858,12 @@ class StepProofCompareApp:
             else:
                 color, shape, size = "#d7e6f5", "dot", 26
 
-            pos = positions.get(node, {})
             nodes_data.append(
                 {
                     "id": node,
                     "label": node,
                     "shape": shape,
                     "size": size,
-                    "x": pos.get("x", 0),
-                    "y": pos.get("y", 0),
-                    "fixed": True,
                     "color": {
                         "background": color,
                         "border": border,
@@ -943,7 +905,6 @@ class StepProofCompareApp:
         stage3_records = {name: self._load_stage3_records(name)[record_ids[name]] for name in exp_names}
         stage1_nodes = _extract_nodes(stage1_records[exp_names[0]], "graph")
         base_graph, stage1_info = build_dag(stage1_nodes)
-        positions = self._fixed_dag_positions(base_graph)
 
         node_info_by_exp: Dict[str, Dict[str, JsonDict]] = {}
         graph_payloads: Dict[str, JsonDict] = {}
@@ -955,7 +916,7 @@ class StepProofCompareApp:
                 for node_id in stage1_info.keys()
             }
             node_info_by_exp[name] = merged_info
-            graph_payloads[name] = self._vis_graph_payload(base_graph, merged_info, positions)
+            graph_payloads[name] = self._vis_graph_payload(base_graph, merged_info)
 
         field_paths = [value for value, _ in COMPARE_FIELD_OPTIONS]
         field_labels = {field: _field_label(field) for field in field_paths}
@@ -980,14 +941,15 @@ class StepProofCompareApp:
   <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet" />
   <style>
     * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; overflow: hidden; }}
     body {{ margin: 0; font-family: Arial, "Microsoft YaHei", sans-serif; color: #1f2937; background: #f5f6f8; }}
-    .page {{ display: grid; grid-template-columns: minmax(520px, 58vw) 1fr; height: 100vh; }}
-    .graphs {{ display: grid; grid-template-rows: 1fr 1fr; gap: 8px; padding: 8px; min-width: 0; }}
-    .graph-card {{ min-height: 0; background: #fff; border: 1px solid #d8dde5; border-radius: 8px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }}
+    .page {{ display: grid; grid-template-columns: minmax(520px, 58vw) 1fr; height: 100vh; min-height: 0; overflow: hidden; }}
+    .graphs {{ display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; padding: 8px; min-width: 0; min-height: 0; height: 100vh; overflow: hidden; }}
+    .graph-card {{ min-height: 0; background: #fff; border: 1px solid #d8dde5; border-radius: 8px; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); }}
     .graph-head {{ display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }}
     .graph-head strong {{ word-break: break-all; }}
-    .network {{ width: 100%; height: 100%; min-height: 280px; }}
-    .side {{ min-width: 0; border-left: 1px solid #d8dde5; background: #fff; display: grid; grid-template-rows: auto 1fr; }}
+    .network {{ width: 100%; height: 100%; min-height: 0; overflow: hidden; }}
+    .side {{ min-width: 0; min-height: 0; border-left: 1px solid #d8dde5; background: #fff; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }}
     .title {{ padding: 12px 14px; border-bottom: 1px solid #d8dde5; }}
     .title h1 {{ margin: 0 0 4px; font-size: 18px; }}
     .title .muted {{ color: #667085; font-size: 12px; word-break: break-all; }}
@@ -1094,17 +1056,30 @@ class StepProofCompareApp:
           edges: new vis.DataSet(payload.edges || []),
         }},
         {{
-          physics: {{ enabled: false }},
-          layout: {{ improvedLayout: false }},
+          physics: {{
+            enabled: true,
+            solver: "hierarchicalRepulsion",
+            hierarchicalRepulsion: {{
+              centralGravity: 0.0,
+              springLength: 200,
+              springConstant: 0.01,
+              nodeDistance: 150,
+              damping: 0.09
+            }}
+          }},
           interaction: {{ hover: true, navigationButtons: true, keyboard: true }},
-          edges: {{ smooth: {{ type: "cubicBezier", forceDirection: "vertical", roundness: 0.4 }} }},
+          edges: {{
+            smooth: {{ type: "continuous", forceDirection: "none" }},
+            color: {{ color: "#64748b", highlight: "#334155", hover: "#334155" }},
+            width: 2
+          }},
           nodes: {{ chosen: false }},
         }}
       );
       network.on("click", (params) => {{
         if (params.nodes && params.nodes.length > 0) renderNodeCompare(params.nodes[0]);
       }});
-      network.once("afterDrawing", () => network.fit({{ animation: false }}));
+      network.once("stabilized", () => network.fit({{ animation: false }}));
       networks.push(network);
       return network;
     }}
