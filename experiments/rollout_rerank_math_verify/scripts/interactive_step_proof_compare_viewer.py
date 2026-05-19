@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import sys
@@ -196,6 +197,46 @@ def _stage3_items(rec: JsonDict, source: str) -> List[JsonDict]:
     return []
 
 
+def _record_id_for(parent_id: str, rollout_id: int) -> str:
+    return f"{parent_id}__rollout_{rollout_id}"
+
+
+def _stage1_signature(rec: JsonDict) -> List[JsonDict]:
+    nodes = _extract_nodes(rec, "graph")
+    signature: List[JsonDict] = []
+    for node in nodes:
+        node_id = str(node.get("fact_id") or node.get("id") or "").strip()
+        if not node_id:
+            continue
+        signature.append(
+            {
+                "fact_id": node_id,
+                "text": str(node.get("text") or "").strip(),
+                "parent_fact_ids": sorted(
+                    str(parent).strip()
+                    for parent in node.get("parent_fact_ids") or []
+                    if str(parent).strip()
+                ),
+                "origin": str(node.get("origin") or "").strip(),
+                "is_final_answer": bool(node.get("is_final_answer")),
+            }
+        )
+    return sorted(signature, key=lambda item: _node_sort_key(str(item.get("fact_id") or "")))
+
+
+def _node_sort_key(node_id: str) -> tuple:
+    prefix = "".join(ch for ch in node_id if not ch.isdigit())
+    digits = "".join(ch for ch in node_id if ch.isdigit())
+    return (prefix, int(digits) if digits else -1, node_id)
+
+
+def _field_label(field_path: str) -> str:
+    for value, label in COMPARE_FIELD_OPTIONS:
+        if value == field_path:
+            return label
+    return field_path
+
+
 @dataclass
 class ExperimentStatus:
     name: str
@@ -255,6 +296,7 @@ class StepProofCompareApp:
         self._cache_lock = threading.Lock()
         self._status_cache: Optional[List[ExperimentStatus]] = None
         self._data_cache: Dict[str, ExperimentData] = {}
+        self._stage1_cache: Dict[str, Dict[str, JsonDict]] = {}
         self._stage3_cache: Dict[str, Dict[str, JsonDict]] = {}
 
     def scan_experiments(self) -> List[ExperimentStatus]:
@@ -378,6 +420,24 @@ class StepProofCompareApp:
             if rid:
                 records[rid] = rec
         self._stage3_cache[exp_name] = records
+        return records
+
+    def _load_stage1_records(self, exp_name: str) -> Dict[str, JsonDict]:
+        if exp_name in self._stage1_cache:
+            return self._stage1_cache[exp_name]
+        status = self._status_by_name(exp_name)
+        stage1_path = status.path / "step_proof_results" / "result_stage1" / "graphs.jsonl"
+        if not stage1_path.is_file() or stage1_path.stat().st_size <= 0:
+            self._stage1_cache[exp_name] = {}
+            return {}
+        rows = _load_jsonl(stage1_path)
+        ensure_single_graph_mode(rows, source_name=str(stage1_path))
+        records: Dict[str, JsonDict] = {}
+        for rec in rows:
+            rid = str((rec.get("meta") or {}).get("record_id") or "").strip()
+            if rid:
+                records[rid] = rec
+        self._stage1_cache[exp_name] = records
         return records
 
     def experiments_payload(self) -> JsonDict:
@@ -518,6 +578,39 @@ class StepProofCompareApp:
             "stage3": rec if isinstance(rec, dict) else None,
         }
 
+    def _rollout_compare_links_payload(self, exp_names: List[str], parent_id: str) -> List[JsonDict]:
+        if len(exp_names) != 2:
+            return []
+        stage1_by_exp = {name: self._load_stage1_records(name) for name in exp_names}
+        stage3_by_exp = {name: self._load_stage3_records(name) for name in exp_names}
+        links: List[JsonDict] = []
+        for rollout_id in range(1, 5):
+            record_ids = {name: _record_id_for(parent_id, rollout_id) for name in exp_names}
+            missing_stage1 = [
+                name for name in exp_names if record_ids[name] not in stage1_by_exp[name]
+            ]
+            missing_stage3 = [
+                name for name in exp_names if record_ids[name] not in stage3_by_exp[name]
+            ]
+            stage1_equal = False
+            if not missing_stage1:
+                signatures = [
+                    _stage1_signature(stage1_by_exp[name][record_ids[name]])
+                    for name in exp_names
+                ]
+                stage1_equal = signatures[0] == signatures[1]
+            links.append(
+                {
+                    "rollout_id": rollout_id,
+                    "record_ids": record_ids,
+                    "stage1_equal": stage1_equal,
+                    "stage1_missing": missing_stage1,
+                    "stage3_missing": missing_stage3,
+                    "clickable": stage1_equal and not missing_stage3,
+                }
+            )
+        return links
+
     def problem_payload(self, exp_names: List[str], parent_id: str) -> JsonDict:
         exp_names = self._normalize_exp_names(exp_names)
         parent_id = str(parent_id).strip()
@@ -583,6 +676,7 @@ class StepProofCompareApp:
             "gold": gold,
             "exp_names": exp_names,
             "tables": tables,
+            "rollout_compare_links": self._rollout_compare_links_payload(exp_names, parent_id),
             "analysis": {
                 "parent_id": parent_id,
                 "source": source,
@@ -698,6 +792,330 @@ class StepProofCompareApp:
                 compare_experiments=exp_names,
             )
         return out_path.read_text(encoding="utf-8")
+
+    def _assert_rollout_stage1_equal(
+        self,
+        exp_names: List[str],
+        parent_id: str,
+        rollout_id: int,
+    ) -> Dict[str, str]:
+        if len(exp_names) != 2:
+            raise ValueError("rollout pair comparison requires exactly 2 experiments")
+        record_ids = {name: _record_id_for(parent_id, rollout_id) for name in exp_names}
+        stage1_by_exp = {name: self._load_stage1_records(name) for name in exp_names}
+        stage3_by_exp = {name: self._load_stage3_records(name) for name in exp_names}
+        for name in exp_names:
+            rid = record_ids[name]
+            if rid not in stage1_by_exp[name]:
+                raise KeyError(f"stage1 record not found in {name}: {rid}")
+            if rid not in stage3_by_exp[name]:
+                raise KeyError(f"stage3 record not found in {name}: {rid}")
+        signatures = [
+            _stage1_signature(stage1_by_exp[name][record_ids[name]])
+            for name in exp_names
+        ]
+        if signatures[0] != signatures[1]:
+            raise ValueError(
+                f"stage1 graph differs for rollout {rollout_id}: {exp_names[0]} vs {exp_names[1]}"
+            )
+        return record_ids
+
+    def _fixed_dag_positions(self, graph: Any) -> Dict[str, JsonDict]:
+        nodes = sorted([str(node) for node in graph.nodes()], key=_node_sort_key)
+        indegree = {node: int(graph.in_degree(node)) for node in nodes}
+        level = {node: 0 for node in nodes}
+        queue = [node for node in nodes if indegree[node] == 0]
+        ordered: List[str] = []
+        while queue:
+            node = queue.pop(0)
+            ordered.append(node)
+            for succ in sorted([str(item) for item in graph.successors(node)], key=_node_sort_key):
+                level[succ] = max(level.get(succ, 0), level[node] + 1)
+                indegree[succ] -= 1
+                if indegree[succ] == 0:
+                    queue.append(succ)
+                    queue.sort(key=_node_sort_key)
+        if len(ordered) != len(nodes):
+            ordered = nodes
+            level = {node: idx for idx, node in enumerate(nodes)}
+
+        by_level: Dict[int, List[str]] = {}
+        for node in nodes:
+            by_level.setdefault(level.get(node, 0), []).append(node)
+        positions: Dict[str, JsonDict] = {}
+        for depth in sorted(by_level):
+            layer = sorted(by_level[depth], key=_node_sort_key)
+            mid = (len(layer) - 1) / 2.0
+            for idx, node in enumerate(layer):
+                positions[node] = {
+                    "x": int((idx - mid) * 190),
+                    "y": int(depth * 155),
+                    "fixed": True,
+                }
+        return positions
+
+    def _vis_graph_payload(
+        self,
+        graph: Any,
+        node_info: Dict[str, JsonDict],
+        positions: Dict[str, JsonDict],
+    ) -> JsonDict:
+        nodes_data: List[JsonDict] = []
+        edges_data: List[JsonDict] = []
+        for node in sorted([str(item) for item in graph.nodes()], key=_node_sort_key):
+            info = node_info.get(node, {})
+            node_type = info.get("type", "unknown")
+            skipped = (
+                info.get("form_status") == "skipped"
+                or info.get("prove_status") == "skipped"
+                or (info.get("formalization") or {}).get("skipped") is True
+                or (info.get("solved_lemma") or {}).get("skipped") is True
+            )
+            border = "#d12f2f"
+            if skipped:
+                border = "#111827"
+            elif (info.get("solved_lemma") or {}).get("lean_verify", False):
+                border = "#0f9f6e"
+            elif (info.get("formalization") or {}).get("lean_pass", False):
+                border = "#f59e0b"
+
+            if node_type == "given":
+                color, shape, size = "#e8e4dc", "box", 28
+            elif node_type == "introduced":
+                color, shape, size = "#e8dff5", "diamond", 30
+            elif node_type == "derived":
+                color, shape, size = "#d7e6f5", "dot", 26
+            elif node_type == "answer":
+                color, shape, size = "#a3c2a8", "star", 38
+            elif node_type == "solution":
+                color, shape, size = "#a3c2a8", "star", 38
+            else:
+                color, shape, size = "#d7e6f5", "dot", 26
+
+            pos = positions.get(node, {})
+            nodes_data.append(
+                {
+                    "id": node,
+                    "label": node,
+                    "shape": shape,
+                    "size": size,
+                    "x": pos.get("x", 0),
+                    "y": pos.get("y", 0),
+                    "fixed": True,
+                    "color": {
+                        "background": color,
+                        "border": border,
+                        "highlight": {"background": color, "border": border},
+                    },
+                    "borderWidth": 3,
+                    "font": {"size": 14, "color": "#111827"},
+                    "chosen": False,
+                }
+            )
+        for src, dst in graph.edges():
+            edges_data.append(
+                {
+                    "from": str(src),
+                    "to": str(dst),
+                    "arrows": "to",
+                    "color": {"color": "#64748b", "highlight": "#334155", "hover": "#334155"},
+                    "width": 2,
+                }
+            )
+        return {"nodes": nodes_data, "edges": edges_data}
+
+    def render_rollout_pair_compare_html(
+        self,
+        exp_names: List[str],
+        parent_id: str,
+        rollout_id: int,
+    ) -> str:
+        exp_names = self._normalize_exp_names(exp_names)
+        parent_id = str(parent_id).strip()
+        if not parent_id:
+            raise ValueError("parent_id is empty")
+        rollout_id = _safe_int(rollout_id)
+        if rollout_id < 1:
+            raise ValueError("rollout_id is invalid")
+        record_ids = self._assert_rollout_stage1_equal(exp_names, parent_id, rollout_id)
+
+        stage1_records = {name: self._load_stage1_records(name)[record_ids[name]] for name in exp_names}
+        stage3_records = {name: self._load_stage3_records(name)[record_ids[name]] for name in exp_names}
+        stage1_nodes = _extract_nodes(stage1_records[exp_names[0]], "graph")
+        base_graph, stage1_info = build_dag(stage1_nodes)
+        positions = self._fixed_dag_positions(base_graph)
+
+        node_info_by_exp: Dict[str, Dict[str, JsonDict]] = {}
+        graph_payloads: Dict[str, JsonDict] = {}
+        for name in exp_names:
+            stage3_nodes = _extract_nodes(stage3_records[name], self.source)
+            _, stage3_info = build_dag(stage3_nodes)
+            merged_info = {
+                node_id: dict(stage3_info.get(node_id) or stage1_info.get(node_id) or {})
+                for node_id in stage1_info.keys()
+            }
+            node_info_by_exp[name] = merged_info
+            graph_payloads[name] = self._vis_graph_payload(base_graph, merged_info, positions)
+
+        field_paths = [value for value, _ in COMPARE_FIELD_OPTIONS]
+        field_labels = {field: _field_label(field) for field in field_paths}
+        compare_payload: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for node_id in sorted(stage1_info.keys(), key=_node_sort_key):
+            compare_payload[node_id] = {}
+            for field in field_paths:
+                compare_payload[node_id][field] = {
+                    name: _get_nested_value(node_info_by_exp[name].get(node_id, {}), field)
+                    for name in exp_names
+                }
+
+        title = f"Rollout {rollout_id} comparison"
+        subtitle = f"{parent_id} / {exp_names[0]} vs {exp_names[1]}"
+        return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(title)}</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet" />
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; font-family: Arial, "Microsoft YaHei", sans-serif; color: #1f2937; background: #f5f6f8; }}
+    .page {{ display: grid; grid-template-columns: minmax(520px, 58vw) 1fr; height: 100vh; }}
+    .graphs {{ display: grid; grid-template-rows: 1fr 1fr; gap: 8px; padding: 8px; min-width: 0; }}
+    .graph-card {{ min-height: 0; background: #fff; border: 1px solid #d8dde5; border-radius: 8px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }}
+    .graph-head {{ display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }}
+    .graph-head strong {{ word-break: break-all; }}
+    .network {{ width: 100%; height: 100%; min-height: 280px; }}
+    .side {{ min-width: 0; border-left: 1px solid #d8dde5; background: #fff; display: grid; grid-template-rows: auto 1fr; }}
+    .title {{ padding: 12px 14px; border-bottom: 1px solid #d8dde5; }}
+    .title h1 {{ margin: 0 0 4px; font-size: 18px; }}
+    .title .muted {{ color: #667085; font-size: 12px; word-break: break-all; }}
+    .legend {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: #475569; }}
+    .legend span {{ display: inline-flex; align-items: center; gap: 4px; }}
+    .swatch {{ width: 12px; height: 12px; border: 2px solid #111827; border-radius: 3px; display: inline-block; }}
+    #detail {{ overflow: auto; padding: 12px 14px 24px; }}
+    .placeholder {{ color: #667085; font-size: 13px; padding: 12px; }}
+    .node-title {{ display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-bottom: 10px; }}
+    .node-title h2 {{ margin: 0; font-size: 17px; }}
+    .field-card {{ border: 1px solid #d8dde5; border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: #fbfcfe; }}
+    .field-title {{ padding: 8px 10px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; font-weight: 700; font-size: 13px; }}
+    .field-values {{ display: grid; grid-template-columns: 1fr 1fr; }}
+    .exp-value {{ min-width: 0; padding: 8px 10px; border-right: 1px solid #e5e7eb; }}
+    .exp-value:last-child {{ border-right: 0; }}
+    .exp-name {{ color: #475569; font-size: 12px; font-weight: 700; margin-bottom: 6px; word-break: break-all; }}
+    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }}
+    .selected-note {{ color: #2563eb; font-size: 12px; }}
+    @media (max-width: 1000px) {{
+      .page {{ grid-template-columns: 1fr; grid-template-rows: 62vh 1fr; }}
+      .side {{ border-left: 0; border-top: 1px solid #d8dde5; }}
+      .field-values {{ grid-template-columns: 1fr; }}
+      .exp-value {{ border-right: 0; border-bottom: 1px solid #e5e7eb; }}
+      .exp-value:last-child {{ border-bottom: 0; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="graphs">
+      <section class="graph-card">
+        <div class="graph-head"><strong id="expAName"></strong><span class="selected-note">top graph</span></div>
+        <div id="graphA" class="network"></div>
+      </section>
+      <section class="graph-card">
+        <div class="graph-head"><strong id="expBName"></strong><span class="selected-note">bottom graph</span></div>
+        <div id="graphB" class="network"></div>
+      </section>
+    </div>
+    <aside class="side">
+      <div class="title">
+        <h1>{html.escape(title)}</h1>
+        <div class="muted">{html.escape(subtitle)}</div>
+        <div class="legend">
+          <span><i class="swatch" style="border-color:#0f9f6e"></i>prove ok</span>
+          <span><i class="swatch" style="border-color:#f59e0b"></i>form ok</span>
+          <span><i class="swatch" style="border-color:#d12f2f"></i>failed</span>
+          <span><i class="swatch" style="border-color:#111827"></i>skipped</span>
+        </div>
+      </div>
+      <div id="detail"><div class="placeholder">Click a node in either graph to compare fields.</div></div>
+    </aside>
+  </div>
+  <script>
+    const expNames = {json.dumps(exp_names, ensure_ascii=False)};
+    const graphPayloads = {json.dumps(graph_payloads, ensure_ascii=False)};
+    const compareData = {json.dumps(compare_payload, ensure_ascii=False)};
+    const fieldPaths = {json.dumps(field_paths, ensure_ascii=False)};
+    const fieldLabels = {json.dumps(field_labels, ensure_ascii=False)};
+    const recordIds = {json.dumps(record_ids, ensure_ascii=False)};
+    const networks = [];
+
+    function escapeHtml(value) {{
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }}
+
+    function valueText(value) {{
+      if (value === null || value === undefined || value === "") return "N/A";
+      if (typeof value === "object") return JSON.stringify(value, null, 2);
+      return String(value);
+    }}
+
+    function renderNodeCompare(nodeId) {{
+      for (const network of networks) {{
+        network.selectNodes([nodeId]);
+      }}
+      let html = `<div class="node-title"><h2>${{escapeHtml(nodeId)}}</h2><span class="selected-note">same stage1 node</span></div>`;
+      const nodeCompare = compareData[nodeId] || {{}};
+      for (const field of fieldPaths) {{
+        html += `<section class="field-card"><div class="field-title">${{escapeHtml(fieldLabels[field] || field)}}</div><div class="field-values">`;
+        for (const expName of expNames) {{
+          const values = nodeCompare[field] || {{}};
+          html += `<div class="exp-value">
+            <div class="exp-name">${{escapeHtml(expName)}}</div>
+            <pre>${{escapeHtml(valueText(values[expName]))}}</pre>
+          </div>`;
+        }}
+        html += `</div></section>`;
+      }}
+      document.getElementById("detail").innerHTML = html;
+    }}
+
+    function makeNetwork(elId, expName) {{
+      const payload = graphPayloads[expName] || {{nodes: [], edges: []}};
+      const network = new vis.Network(
+        document.getElementById(elId),
+        {{
+          nodes: new vis.DataSet(payload.nodes || []),
+          edges: new vis.DataSet(payload.edges || []),
+        }},
+        {{
+          physics: {{ enabled: false }},
+          layout: {{ improvedLayout: false }},
+          interaction: {{ hover: true, navigationButtons: true, keyboard: true }},
+          edges: {{ smooth: {{ type: "cubicBezier", forceDirection: "vertical", roundness: 0.4 }} }},
+          nodes: {{ chosen: false }},
+        }}
+      );
+      network.on("click", (params) => {{
+        if (params.nodes && params.nodes.length > 0) renderNodeCompare(params.nodes[0]);
+      }});
+      network.once("afterDrawing", () => network.fit({{ animation: false }}));
+      networks.push(network);
+      return network;
+    }}
+
+    document.getElementById("expAName").textContent = `${{expNames[0]}} / ${{recordIds[expNames[0]] || ""}}`;
+    document.getElementById("expBName").textContent = `${{expNames[1]}} / ${{recordIds[expNames[1]] || ""}}`;
+    makeNetwork("graphA", expNames[0]);
+    makeNetwork("graphB", expNames[1]);
+  </script>
+</body>
+</html>"""
 
     def _normalize_exp_names(self, exp_names: Iterable[str]) -> List[str]:
         names = [str(name).strip() for name in exp_names if str(name).strip()]
@@ -924,6 +1342,22 @@ HTML_PAGE = r"""<!doctype html>
       flex-wrap: wrap;
       font-size: 13px;
     }
+    .rollout-compare-links {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      font-size: 13px;
+    }
+    .rollout-compare-links .disabled-link {
+      color: var(--muted);
+      cursor: default;
+    }
     .fact-detail {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1112,6 +1546,32 @@ HTML_PAGE = r"""<!doctype html>
       return `<div class="graph-links">${rows.join("")}</div>`;
     }
 
+    function rolloutCompareReason(link) {
+      if ((link.stage1_missing || []).length) return `stage1 missing: ${(link.stage1_missing || []).join(", ")}`;
+      if (!link.stage1_equal) return "stage1 graph differs";
+      if ((link.stage3_missing || []).length) return `stage3 missing: ${(link.stage3_missing || []).join(", ")}`;
+      return "";
+    }
+
+    function renderRolloutCompareLinks(data) {
+      const names = data.exp_names || [];
+      const links = data.rollout_compare_links || [];
+      if (names.length !== 2 || !links.length) return "";
+      const pieces = links.map((link) => {
+        const label = `rollout${link.rollout_id}`;
+        if (link.clickable) {
+          return `<a onclick="openRolloutCompare('${escapeAttr(data.parent_id)}', ${Number(link.rollout_id)}, '${escapeAttr(names.join(","))}')">${escapeHtml(label)}</a>`;
+        }
+        const reason = rolloutCompareReason(link);
+        return `<span class="disabled-link" title="${escapeAttr(reason)}">${escapeHtml(label)}</span>`;
+      }).join("");
+      return `<div class="rollout-compare-links">
+        <strong>Compare same rollout</strong>
+        ${pieces}
+        <span class="muted">enabled only when complete stage1 graphs match</span>
+      </div>`;
+    }
+
     function renderRolloutSummaryTables(data) {
       const tables = data.tables || {};
       const names = data.exp_names || Object.keys(tables);
@@ -1204,6 +1664,24 @@ HTML_PAGE = r"""<!doctype html>
         renderExperimentList(data.experiments || []);
         renderSummary(data.experiments || []);
         setTab("experimentsTab");
+      } catch (e) {
+        err.textContent = e.message || String(e);
+      }
+    }
+
+    function openRolloutCompare(parentId, rolloutId, expNamesCsv) {
+      const err = document.getElementById("sideError");
+      err.textContent = "";
+      try {
+        const names = expNamesCsv ? expNamesCsv.split(",").filter(Boolean) : guardSelection();
+        if (names.length !== 2) throw new Error("Please select exactly 2 experiments.");
+        const params = new URLSearchParams({
+          root: currentRoot,
+          exp_names: names.join(","),
+          parent_id: parentId,
+          rollout_id: String(rolloutId),
+        });
+        window.open(`/rollout_compare?${params.toString()}`, "_blank", "noopener");
       } catch (e) {
         err.textContent = e.message || String(e);
       }
@@ -1432,7 +1910,7 @@ HTML_PAGE = r"""<!doctype html>
       <h2>Question</h2>
       <div class="question">${escapeHtml(data.question)}</div>`;
       const analysisJson = JSON.stringify(data.analysis || {}, null, 2);
-      document.getElementById("problem").innerHTML = meta + renderRolloutSummaryTables(data) + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
+      document.getElementById("problem").innerHTML = meta + renderRolloutCompareLinks(data) + renderRolloutSummaryTables(data) + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
     }
 
     async function renderGraph(expName, recordId) {
@@ -1559,6 +2037,7 @@ def create_handler(app: StepProofCompareApp):
                         app.results_root = Path(root).expanduser().resolve()
                     app._status_cache = None
                     app._data_cache.clear()
+                    app._stage1_cache.clear()
                     app._stage3_cache.clear()
                     _json_response(self, HTTPStatus.OK, app.experiments_payload())
                     return
@@ -1568,10 +2047,29 @@ def create_handler(app: StepProofCompareApp):
                         app.results_root = Path(root).expanduser().resolve()
                         app._status_cache = None
                         app._data_cache.clear()
+                        app._stage1_cache.clear()
                         app._stage3_cache.clear()
                     exp_names = _split_csv((query.get("exp_names") or [""])[0])
                     parent_id = (query.get("parent_id") or [""])[0].strip()
                     _json_response(self, HTTPStatus.OK, app.problem_payload(exp_names, parent_id))
+                    return
+                if parsed.path == "/rollout_compare":
+                    root = (query.get("root") or [""])[0].strip()
+                    if root and Path(root).expanduser().resolve() != app.results_root:
+                        app.results_root = Path(root).expanduser().resolve()
+                        app._status_cache = None
+                        app._data_cache.clear()
+                        app._stage1_cache.clear()
+                        app._stage3_cache.clear()
+                    exp_names = _split_csv((query.get("exp_names") or [""])[0])
+                    parent_id = (query.get("parent_id") or [""])[0].strip()
+                    rollout_id = _safe_int((query.get("rollout_id") or [""])[0])
+                    body = app.render_rollout_pair_compare_html(exp_names, parent_id, rollout_id).encode("utf-8")
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
                 _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             except Exception as exc:
@@ -1589,6 +2087,7 @@ def create_handler(app: StepProofCompareApp):
                     app.results_root = Path(root).expanduser().resolve()
                     app._status_cache = None
                     app._data_cache.clear()
+                    app._stage1_cache.clear()
                     app._stage3_cache.clear()
                 if parsed.path == "/api/mine_cases":
                     exp_names = _split_csv((form.get("exp_names") or [""])[0])
