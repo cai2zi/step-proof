@@ -36,6 +36,7 @@ COMPARE_FIELD_OPTIONS = [
     ("formalization.error_msg", "Formalization error"),
     ("solved_lemma.lean_code", "Solved lemma Lean"),
     ("solved_lemma.error_msg", "Prove error"),
+    ("formalization.raw_conv", "Formalization raw conv"),
     ("solved_lemma.conversation_raw", "Prove conversation raw"),
 ]
 REQUIRED_FILES = [
@@ -128,6 +129,15 @@ def _fmt_pct(value: Any) -> str:
 
 
 def _get_nested_value(payload: JsonDict, field_path: str) -> Any:
+    if field_path == "formalization.raw_conv":
+        formalization = payload.get("formalization") if isinstance(payload, dict) else {}
+        if not isinstance(formalization, dict):
+            return ""
+        for key in ("raw_conv", "conversation_raw", "conversation"):
+            value = formalization.get(key)
+            if value not in (None, ""):
+                return value
+        return ""
     current: Any = payload
     for part in field_path.split("."):
         if not isinstance(current, dict):
@@ -300,6 +310,7 @@ class StepProofCompareApp:
         self._status_cache: Optional[List[ExperimentStatus]] = None
         self._data_cache: Dict[str, ExperimentData] = {}
         self._stage1_cache: Dict[str, Dict[str, JsonDict]] = {}
+        self._stage2_cache: Dict[str, Dict[str, JsonDict]] = {}
         self._stage3_cache: Dict[str, Dict[str, JsonDict]] = {}
 
     def scan_experiments(self) -> List[ExperimentStatus]:
@@ -441,6 +452,24 @@ class StepProofCompareApp:
             if rid:
                 records[rid] = rec
         self._stage1_cache[exp_name] = records
+        return records
+
+    def _load_stage2_records(self, exp_name: str) -> Dict[str, JsonDict]:
+        if exp_name in self._stage2_cache:
+            return self._stage2_cache[exp_name]
+        status = self._status_by_name(exp_name)
+        stage2_path = status.path / "step_proof_results" / "result_stage2" / "stage2_results.jsonl"
+        if not stage2_path.is_file() or stage2_path.stat().st_size <= 0:
+            self._stage2_cache[exp_name] = {}
+            return {}
+        rows = _load_jsonl(stage2_path)
+        ensure_single_graph_mode(rows, source_name=str(stage2_path))
+        records: Dict[str, JsonDict] = {}
+        for rec in rows:
+            rid = str((rec.get("meta") or {}).get("record_id") or "").strip()
+            if rid:
+                records[rid] = rec
+        self._stage2_cache[exp_name] = records
         return records
 
     def experiments_payload(self) -> JsonDict:
@@ -614,6 +643,67 @@ class StepProofCompareApp:
             )
         return links
 
+    def _copy_cell_payload(
+        self,
+        exp_name: str,
+        rollout_id: int,
+        record_id: str,
+        stage: str,
+        record: Optional[JsonDict],
+    ) -> JsonDict:
+        return {
+            "experiment": exp_name,
+            "rollout_id": rollout_id,
+            "record_id": record_id,
+            "stage": stage,
+            "found": isinstance(record, dict),
+            "record": record if isinstance(record, dict) else None,
+        }
+
+    def _rollout_copy_rows_payload(self, exp_names: List[str], parent_id: str) -> List[JsonDict]:
+        rows: List[JsonDict] = []
+        for name in exp_names:
+            data = self._load_data(name)
+            rollout_rows = sorted(
+                data.scores_by_parent.get(parent_id) or [],
+                key=lambda item: _safe_int(item.get("rollout_id")),
+            )
+            stage1_records = self._load_stage1_records(name)
+            stage2_records = self._load_stage2_records(name)
+            stage3_records = self._load_stage3_records(name)
+            for row in rollout_rows:
+                rollout_id = _safe_int(row.get("rollout_id"))
+                record_id = str(row.get("id") or _record_id_for(parent_id, rollout_id))
+                math_verify = data.eval_by_rollout.get(record_id, {})
+                stage1 = stage1_records.get(record_id)
+                stage2 = stage2_records.get(record_id)
+                stage3 = stage3_records.get(record_id)
+                all_info = {
+                    "experiment": name,
+                    "parent_id": parent_id,
+                    "rollout_id": rollout_id,
+                    "record_id": record_id,
+                    "score": row,
+                    "math_verify": math_verify,
+                    "stage1": stage1,
+                    "stage2": stage2,
+                    "stage3": stage3,
+                }
+                rows.append(
+                    {
+                        "experiment": name,
+                        "rollout_id": rollout_id,
+                        "record_id": record_id,
+                        "cells": {
+                            "stage1": self._copy_cell_payload(name, rollout_id, record_id, "stage1", stage1),
+                            "stage2": self._copy_cell_payload(name, rollout_id, record_id, "stage2", stage2),
+                            "stage3": self._copy_cell_payload(name, rollout_id, record_id, "stage3", stage3),
+                            "all": all_info,
+                        },
+                    }
+                )
+        return rows
+
     def problem_payload(self, exp_names: List[str], parent_id: str) -> JsonDict:
         exp_names = self._normalize_exp_names(exp_names)
         parent_id = str(parent_id).strip()
@@ -680,6 +770,7 @@ class StepProofCompareApp:
             "exp_names": exp_names,
             "tables": tables,
             "rollout_compare_links": self._rollout_compare_links_payload(exp_names, parent_id),
+            "rollout_copy_rows": self._rollout_copy_rows_payload(exp_names, parent_id),
             "analysis": {
                 "parent_id": parent_id,
                 "source": source,
@@ -1335,6 +1426,13 @@ HTML_PAGE = r"""<!doctype html>
       color: var(--muted);
       cursor: default;
     }
+    .copy-matrix {
+      margin-top: 12px;
+    }
+    .copy-matrix button {
+      width: 100%;
+      white-space: nowrap;
+    }
     .fact-detail {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1440,6 +1538,7 @@ HTML_PAGE = r"""<!doctype html>
     let completeNames = [];
     let copyBlockCounter = 0;
     let currentGraphJson = "";
+    let currentRolloutCopyRows = [];
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1546,6 +1645,52 @@ HTML_PAGE = r"""<!doctype html>
         <strong>Compare same rollout</strong>
         ${pieces}
         <span class="muted">enabled only when complete stage1 graphs match</span>
+      </div>`;
+    }
+
+    async function copyRolloutInfo(rowIdx, key, button) {
+      const row = currentRolloutCopyRows[rowIdx] || {};
+      const cells = row.cells || {};
+      const payload = cells[key] || {};
+      const label = button.textContent;
+      try {
+        await copyText(JSON.stringify(payload, null, 2));
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = label; }, 900);
+      } catch (e) {
+        button.textContent = "Failed";
+        setTimeout(() => { button.textContent = label; }, 1200);
+      }
+    }
+
+    function renderRolloutCopyMatrix(data) {
+      currentRolloutCopyRows = data.rollout_copy_rows || [];
+      if (!currentRolloutCopyRows.length) return "";
+      return `<div class="copy-matrix">
+        <h2>Copy rollout stage info</h2>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>Experiment</th>
+            <th>Rollout</th>
+            <th>stage1</th>
+            <th>stage2</th>
+            <th>stage3</th>
+            <th>All info</th>
+          </tr></thead>
+          <tbody>${currentRolloutCopyRows.map((row, idx) => {
+            const stage1 = ((row.cells || {}).stage1 || {}).found;
+            const stage2 = ((row.cells || {}).stage2 || {}).found;
+            const stage3 = ((row.cells || {}).stage3 || {}).found;
+            return `<tr>
+              <td>${escapeHtml(row.experiment)}</td>
+              <td>${escapeHtml(row.rollout_id)}<br><span class="muted">${escapeHtml(row.record_id)}</span></td>
+              <td><button onclick="copyRolloutInfo(${idx}, 'stage1', this)">Copy${stage1 ? "" : " missing"}</button></td>
+              <td><button onclick="copyRolloutInfo(${idx}, 'stage2', this)">Copy${stage2 ? "" : " missing"}</button></td>
+              <td><button onclick="copyRolloutInfo(${idx}, 'stage3', this)">Copy${stage3 ? "" : " missing"}</button></td>
+              <td><button onclick="copyRolloutInfo(${idx}, 'all', this)">Copy all</button></td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table></div>
       </div>`;
     }
 
@@ -1877,6 +2022,7 @@ HTML_PAGE = r"""<!doctype html>
 
     function renderProblem(data) {
       copyBlockCounter = 0;
+      currentRolloutCopyRows = [];
       const names = data.exp_names || [];
       const meta = `<div class="problem-meta">
         <div><strong>ID</strong><br>${escapeHtml(data.parent_id)}</div>
@@ -1887,7 +2033,7 @@ HTML_PAGE = r"""<!doctype html>
       <h2>Question</h2>
       <div class="question">${escapeHtml(data.question)}</div>`;
       const analysisJson = JSON.stringify(data.analysis || {}, null, 2);
-      document.getElementById("problem").innerHTML = meta + renderRolloutCompareLinks(data) + renderRolloutSummaryTables(data) + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
+      document.getElementById("problem").innerHTML = meta + renderRolloutCompareLinks(data) + renderRolloutCopyMatrix(data) + renderRolloutSummaryTables(data) + renderGraphLinks(data) + renderJsonBox("All rollout / form / prove JSON", analysisJson);
     }
 
     async function renderGraph(expName, recordId) {
@@ -2015,6 +2161,7 @@ def create_handler(app: StepProofCompareApp):
                     app._status_cache = None
                     app._data_cache.clear()
                     app._stage1_cache.clear()
+                    app._stage2_cache.clear()
                     app._stage3_cache.clear()
                     _json_response(self, HTTPStatus.OK, app.experiments_payload())
                     return
@@ -2025,6 +2172,7 @@ def create_handler(app: StepProofCompareApp):
                         app._status_cache = None
                         app._data_cache.clear()
                         app._stage1_cache.clear()
+                        app._stage2_cache.clear()
                         app._stage3_cache.clear()
                     exp_names = _split_csv((query.get("exp_names") or [""])[0])
                     parent_id = (query.get("parent_id") or [""])[0].strip()
@@ -2037,6 +2185,7 @@ def create_handler(app: StepProofCompareApp):
                         app._status_cache = None
                         app._data_cache.clear()
                         app._stage1_cache.clear()
+                        app._stage2_cache.clear()
                         app._stage3_cache.clear()
                     exp_names = _split_csv((query.get("exp_names") or [""])[0])
                     parent_id = (query.get("parent_id") or [""])[0].strip()
@@ -2065,6 +2214,7 @@ def create_handler(app: StepProofCompareApp):
                     app._status_cache = None
                     app._data_cache.clear()
                     app._stage1_cache.clear()
+                    app._stage2_cache.clear()
                     app._stage3_cache.clear()
                 if parsed.path == "/api/mine_cases":
                     exp_names = _split_csv((form.get("exp_names") or [""])[0])
