@@ -24,7 +24,7 @@ stage1:
   question_column: question
   response_column: response
   limit: -1
-  reuse_from_step_proof: null
+  reuse_from_step_proof: reduce_prompt_API
   reuse_require_all: true
 
   # Shared generation settings.
@@ -103,13 +103,13 @@ stage2:
   limit: -1
 
 stage3:
-  gpus: 0,1,2
+  gpus: 0
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
   prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
-  prover_instances: 3
+  prover_instances: 1
   prover_parallel_startup: True
   prover_startup_stagger_seconds: 0
   prover_startup_timeout: 1800

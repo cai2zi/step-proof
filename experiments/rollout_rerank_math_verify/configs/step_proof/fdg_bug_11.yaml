@@ -24,7 +24,7 @@ stage1:
   question_column: question
   response_column: response
   limit: -1
-  reuse_from_step_proof: reduce_prompt_API_pass4
+  reuse_from_step_proof: reduce_prompt_API
   reuse_require_all: true
 
   # Shared generation settings.
