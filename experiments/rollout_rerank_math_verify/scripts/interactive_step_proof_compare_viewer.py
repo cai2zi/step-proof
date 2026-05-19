@@ -33,7 +33,9 @@ COMPARE_FIELD_OPTIONS = [
     ("proof_obligation.informal_statement_content", "Proof obligation"),
     ("formalization.lean_code", "Formalization Lean"),
     ("formalization.dependency_context_block", "Context block"),
+    ("formalization.error_msg", "Formalization error"),
     ("solved_lemma.lean_code", "Solved lemma Lean"),
+    ("solved_lemma.error_msg", "Prove error"),
     ("solved_lemma.conversation_raw", "Prove conversation raw"),
 ]
 REQUIRED_FILES = [
