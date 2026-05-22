@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/path_env.sh"
 EXP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STEP_PROOF_ROOT="$(cd "${EXP_DIR}/../.." && pwd)"
-CONFIG_NAME="${1:-qwen3_8b}"
+CONFIG_NAME="${1:-base}"
 if [[ $# -gt 0 ]]; then
   shift
 fi

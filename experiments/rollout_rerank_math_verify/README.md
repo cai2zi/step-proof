@@ -18,23 +18,23 @@ Default environments:
 From `${CZX_ROOT}/step-proof`:
 
 ```bash
-bash experiments/rollout_rerank_math_verify/scripts/run_all.sh default
+bash experiments/rollout_rerank_math_verify/scripts/run_all.sh
 ```
 
 The three stages can also be run independently:
 
 ```bash
-bash experiments/rollout_rerank_math_verify/scripts/01_rollout.sh qwen3_8b
-bash experiments/rollout_rerank_math_verify/scripts/02_step_proof.sh fdg_bug
-bash experiments/rollout_rerank_math_verify/scripts/03_eval.sh math_verify
+bash experiments/rollout_rerank_math_verify/scripts/01_rollout.sh base
+bash experiments/rollout_rerank_math_verify/scripts/02_step_proof.sh base
+bash experiments/rollout_rerank_math_verify/scripts/03_eval.sh base
 ```
 
 The pipeline config only selects stage configs:
 
 ```yaml
-rollout_config: qwen3_8b
-step_proof_config: fdg_bug
-eval_config: math_verify
+rollout_config: base
+step_proof_config: base
+eval_config: base
 ```
 
 Rollout uses one vLLM process per GPU by default. Worker startup and scheduling are controlled by:
@@ -50,7 +50,7 @@ rollout:
 
 With `parallel_startup: true`, all vLLM worker processes are started first and then waited on for readiness. During inference, batches are scheduled dynamically: when a worker finishes its current micro-batch, it immediately receives the next pending micro-batch.
 
-To evaluate only selected benches, edit `data.sources` in `configs/rollout/qwen3_8b.yaml`:
+To evaluate only selected benches, edit `data.sources` in `configs/rollout/base.yaml`:
 
 ```yaml
 data:
@@ -78,13 +78,13 @@ omni_math_test
 
 Under `${CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs`:
 
-- `rollouts/rollout_qwen3_8b/rollout_raw.jsonl`
-- `rollouts/rollout_qwen3_8b/rollout_flat.parquet`
-- `rollouts/rollout_qwen3_8b/manifest.json`
-- `step_proofs/step_proof_fdg_bug/step_proof_results/result_stage3/stage3_results.jsonl`
-- `step_proofs/step_proof_fdg_bug/scores.jsonl`
-- `step_proofs/step_proof_fdg_bug/selected_step_proof.jsonl`
-- `step_proofs/step_proof_fdg_bug/math_verify/random_seed_*_eval.jsonl`
-- `step_proofs/step_proof_fdg_bug/math_verify/step_proof_best_eval.jsonl`
-- `step_proofs/step_proof_fdg_bug/math_verify/all_rollouts_eval.jsonl`
-- `step_proofs/step_proof_fdg_bug/summary/metrics.json`
+- `rollouts/rollout_<rollout_name>/rollout_raw.jsonl`
+- `rollouts/rollout_<rollout_name>/rollout_flat.parquet`
+- `rollouts/rollout_<rollout_name>/manifest.json`
+- `step_proofs/step_proof_<step_proof_name>/step_proof_results/result_stage3/stage3_results.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/scores.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/selected_step_proof.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/math_verify/random_seed_*_eval.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/math_verify/step_proof_best_eval.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/math_verify/all_rollouts_eval.jsonl`
+- `step_proofs/step_proof_<step_proof_name>/summary/metrics.json`
