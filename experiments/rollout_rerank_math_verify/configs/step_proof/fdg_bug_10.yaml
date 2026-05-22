@@ -1,4 +1,4 @@
-output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs
 name: reduce_prompt
 rollout_name: qwen3_8b
 
@@ -6,7 +6,7 @@ exp:
   name: step_proof_results
   root: ${output_root}/step_proofs/step_proof_${name}
 
-python: ${oc.env:PYTHON,/root/autodl-tmp/env/lean4/bin/python}
+python: ${oc.env:LEAN4_PYTHON}
 
 run:
   stages: [stage1, stage2, stage3, stats]
@@ -41,7 +41,7 @@ stage1:
   include_think_in_dag: false
 
   # API backend settings (OpenAI-compatible).
-  #   export POLOAI_API_KEY='sk-...'   # 勿把密钥写进 yaml
+  #   export POLOAI_API_KEY='sk-...'   # keep API keys out of yaml
   # PoloAI (https://poloai.top):
   api_model: gpt-5-mini
   api_base_url: https://poloai.top/v1
@@ -54,7 +54,7 @@ stage1:
   api_tokenizer_path: ${stage1.model_path}
 
   # vLLM backend settings.
-  model_path: /root/autodl-tmp/models/Qwen3-8B
+  model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
   token_limit: 32768 # VLLM total tokens
   vllm_instances: 4
   parallel_startup: True
@@ -69,11 +69,11 @@ stage1:
     enable_thinking: true
 
 lean_runtime:
-  mathlib_path: /root/autodl-tmp/mathlib4
+  mathlib_path: ${oc.env:CZX_ROOT}/mathlib4
   lean_backend: persistent_lsp
   lean_check_concurrency: 16
   lean_worker_pool_size: 0
-  lean_temp_dir: lean_jobs_shared
+  lean_temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/${name}
 
 stage2:
   gpus: 0
@@ -81,7 +81,7 @@ stage2:
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
-  formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-32B
+  formalizer_model_path: ${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B
   formalizer_instances: 1
   formalizer_parallel_startup: True
   formalizer_startup_stagger_seconds: 0
@@ -108,7 +108,7 @@ stage3:
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 8
-  prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
+  prover_model_path: ${oc.env:CZX_ROOT}/models/Goedel-Prover-V2-8B
   prover_instances: 1
   prover_parallel_startup: True
   prover_startup_stagger_seconds: 0

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=path_env.sh
+source "${SCRIPT_DIR}/path_env.sh"
 EXP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STEP_PROOF_ROOT="$(cd "${EXP_DIR}/../.." && pwd)"
 CONFIG_NAME="${1:-math_verify}"
@@ -9,10 +11,11 @@ if [[ $# -gt 0 ]]; then
   shift
 fi
 CONFIG="${EXP_DIR}/configs/eval/${CONFIG_NAME}.yaml"
-PYTHON_BIN="${PYTHON:-${LEAN4_PYTHON:-/root/autodl-tmp/env/lean4/bin/python}}"
+PYTHON_BIN="${PYTHON}"
 
 readarray -t PATHS < <("${PYTHON_BIN}" - "${CONFIG}" "$@" <<'PY'
 import sys
+import os
 import yaml
 
 try:
@@ -42,7 +45,7 @@ else:
     cfg = OmegaConf.to_container(cfg, resolve=True)
 root = cfg["output_root"]
 step_proof_name = cfg["step_proof_name"]
-eval_python = (cfg.get("env") or {}).get("eval_python", "/root/autodl-tmp/env/eval/bin/python")
+eval_python = (cfg.get("env") or {}).get("eval_python", os.environ.get("EVAL_PYTHON") or os.environ.get("LEAN4_PYTHON") or "python")
 print(f"{root}/step_proofs/step_proof_{step_proof_name}/math_verify")
 print(eval_python)
 PY

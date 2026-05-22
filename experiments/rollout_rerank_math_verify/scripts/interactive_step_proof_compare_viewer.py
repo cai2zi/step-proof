@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from path_defaults import output_root, step_proofs_root
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -304,7 +306,7 @@ class StepProofCompareApp:
         self.results_root = results_root
         self.source = source
         self.graph_only = graph_only
-        self.cache_dir = repo_root / ".tmp_step_proof_compare_html"
+        self.cache_dir = output_root() / "_viewer_cache" / "step_proof_compare_html"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_lock = threading.Lock()
         self._status_cache: Optional[List[ExperimentStatus]] = None
@@ -2243,7 +2245,7 @@ def create_handler(app: StepProofCompareApp):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive viewer for step-proof experiment comparison.")
-    default_results_root = Path(__file__).resolve().parent.parent / "outputs" / "step_proofs"
+    default_results_root = step_proofs_root()
     parser.add_argument("--results-root", type=Path, default=default_results_root)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)

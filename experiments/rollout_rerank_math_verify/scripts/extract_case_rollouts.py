@@ -10,11 +10,12 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from path_defaults import default_rollout_flat, rollouts_root, step_proofs_root
 
 EXP_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_STEP_PROOF_ROOT = EXP_DIR / "outputs" / "step_proofs"
-DEFAULT_SOURCE_FLAT = EXP_DIR / "outputs" / "rollouts" / "rollout_qwen3_8b" / "rollout_flat.parquet"
-DEFAULT_OUT_ROOT = EXP_DIR / "outputs" / "rollouts"
+DEFAULT_STEP_PROOF_ROOT = step_proofs_root()
+DEFAULT_SOURCE_FLAT = default_rollout_flat("qwen3_8b")
+DEFAULT_OUT_ROOT = rollouts_root()
 
 
 JsonDict = dict[str, Any]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,8 @@ from proofflow.graph_mode import FDG_GRAPH_MODE, ensure_single_graph_mode, extra
 
 
 JsonDict = Dict[str, Any]
+CZX_ROOT = Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx"))
+WORK_ROOT = CZX_ROOT / "czx_work" / "step-proof"
 COMPARE_FIELD_OPTIONS = [
     ("text", "Fact text"),
     ("origin", "Origin (fdg_origin4)"),
@@ -125,7 +128,7 @@ class ViewerApp:
         self.graph_only = graph_only
         self._pinned_jsonl: Optional[Path] = pinned[0] if pinned else None
         self._pinned_label: Optional[str] = pinned[1] if pinned else None
-        self.cache_dir = self.repo_root / ".tmp_stage3_viewer_html"
+        self.cache_dir = WORK_ROOT / "_viewer_cache" / "stage3_viewer_html"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_lock = threading.Lock()
         self._record_cache: Dict[str, Dict[str, JsonDict]] = {}
@@ -597,7 +600,7 @@ def main() -> None:
     parser.add_argument(
         "--results-root",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "results",
+        default=WORK_ROOT / "results",
         help=(
             "多实验扫描根目录（其下每层子目录需含 result_stage3/stage3_results.jsonl）；"
             "若使用 --session-dir 或 --stage3-jsonl 则仍可保留此参数但不再扫描"

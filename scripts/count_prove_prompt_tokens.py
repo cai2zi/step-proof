@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ if str(_STEP_PROOF_ROOT) not in sys.path:
 from proofflow.prompt_builder import build_chat_messages
 
 JsonDict = Dict[str, Any]
+CZX_ROOT = Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx"))
+WORK_ROOT = CZX_ROOT / "czx_work" / "step-proof"
 
 
 def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
@@ -65,13 +68,9 @@ def build_fdg_prove_messages(
         )
     return messages
 
-DEFAULT_TOKENIZER = "/root/autodl-tmp/models/Goedel-Prover-V2-8B"
-DEFAULT_PROVE_JSONL = (
-    "/root/autodl-tmp/step-proof/results/qwen32B_1k/cot_traces/prove_last_attempts.jsonl"
-)
-DEFAULT_FORMAL_JSONL = (
-    "/root/autodl-tmp/step-proof/results/qwen32B_1k/cot_traces/formal_last_attempts.jsonl"
-)
+DEFAULT_TOKENIZER = str(CZX_ROOT / "models" / "Goedel-Prover-V2-8B")
+DEFAULT_PROVE_JSONL = str(WORK_ROOT / "results" / "qwen32B_1k" / "cot_traces" / "prove_last_attempts.jsonl")
+DEFAULT_FORMAL_JSONL = str(WORK_ROOT / "results" / "qwen32B_1k" / "cot_traces" / "formal_last_attempts.jsonl")
 DEFAULT_PROMPT_NAME = "prove.paper_goedel_v2"
 RETRY_SUFFIX = "\n\n Based on these errors, please correct the previous response. "
 

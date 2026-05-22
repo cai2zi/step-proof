@@ -8,9 +8,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+from path_defaults import step_proofs_root
 
 EXP_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_STEP_PROOF_ROOT = EXP_DIR / "outputs" / "step_proofs"
+DEFAULT_STEP_PROOF_ROOT = step_proofs_root()
 
 
 JsonDict = dict[str, Any]

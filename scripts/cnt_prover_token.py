@@ -3,11 +3,17 @@ import os
 from collections import defaultdict
 from transformers import AutoTokenizer
 
+CZX_ROOT = os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx")
+WORK_ROOT = os.path.join(CZX_ROOT, "czx_work", "step-proof")
+
 # ================= 配置区域 =================
 # 模型路径 (请确保该路径下包含 tokenizer 文件)
-MODEL_PATH = "/root/autodl-tmp/models/Goedel-Prover-V2-8B"
+MODEL_PATH = os.environ.get("PROVER_MODEL_PATH", os.path.join(CZX_ROOT, "models", "Goedel-Prover-V2-8B"))
 # 数据文件路径
-DATA_FILE = "/root/autodl-tmp/step-proof/results/fdg_builder_grpo/cot_traces/formal_last_attempts.jsonl"
+DATA_FILE = os.environ.get(
+    "PROVER_TOKEN_DATA_FILE",
+    os.path.join(WORK_ROOT, "results", "fdg_builder_grpo", "cot_traces", "formal_last_attempts.jsonl"),
+)
 # ===========================================
 
 def get_bin_name(count):

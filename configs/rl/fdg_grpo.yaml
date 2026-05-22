@@ -1,5 +1,5 @@
-python: ${oc.env:PYTHON,python}
-project_root: ${oc.env:PROJECT_ROOT,.}
+python: ${oc.env:LEAN4_PYTHON}
+project_root: ${oc.env:CZX_ROOT}/step-proof
 verl_entry: verl.trainer.main_ppo
 
 train_file: ${project_root}/data/rl/fdg_builder/train.parquet
@@ -7,7 +7,7 @@ val_file: ${project_root}/data/rl/fdg_builder/val.parquet
 reward_config_path: ${project_root}/configs/rl/fdg_reward.yaml
 reward_fn_path: ${project_root}/proofflow/rl_fdg/reward_fn.py
 experiment_name: ${oc.env:RL_EXPERIMENT_NAME,fdg_builder_grpo}
-results_root: ${oc.env:RL_RESULTS_ROOT,${project_root}/results}
+results_root: ${oc.env:RL_RESULTS_ROOT,${oc.env:CZX_ROOT}/czx_work/step-proof/results}
 experiment_root: ${results_root}/${experiment_name}
 
 overrides:
@@ -21,7 +21,7 @@ overrides:
   - data.filter_overlong_prompts=True
   - data.truncation=error
   - data.dataloader_num_workers=${oc.env:RL_DATALOADER_NUM_WORKERS,2}
-  - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,/root/autodl-tmp/models/Qwen3-8B}
+  - actor_rollout_ref.model.path=${oc.env:BUILDER_MODEL_PATH,${oc.env:CZX_ROOT}/models/Qwen3-8B}
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.model.use_remove_padding=True
   - actor_rollout_ref.model.lora_rank=${oc.env:RL_LORA_RANK,64}
@@ -48,7 +48,7 @@ overrides:
   - reward.reward_manager.source=register
   - reward.custom_reward_function.path=${reward_fn_path}
   - reward.custom_reward_function.name=compute_score
-  # verl 默认 struct 里没有 reward_kwargs，必须用 + 追加新键
+  # verl uses struct mode, so reward_kwargs must be added with + keys.
   - +reward.custom_reward_function.reward_kwargs.reward_config_path=${reward_config_path}
   - +reward.custom_reward_function.reward_kwargs.use_runtime_actor=true
   - +reward.custom_reward_function.reward_kwargs.runtime_actor_fallback_to_local=false

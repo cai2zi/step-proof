@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pandas as pd
 from omegaconf import OmegaConf
 
+CZX_ROOT = Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx"))
+sys.path.append(str(CZX_ROOT / "step-proof"))
+
 from proofflow.rl_fdg.dataset import build_rl_examples, write_json_manifest, write_verl_parquet
 
-import sys;
-sys.path.append("/root/autodl-tmp/step-proof")
-DEFAULT_SOURCE_FILE = Path("/root/autodl-tmp/data_raw/ODA-Math-460k/data_2/shuffled_all.parquet")
+DEFAULT_SOURCE_FILE = CZX_ROOT / "data_raw" / "ODA-Math-460k" / "data_2" / "shuffled_all.parquet"
 DEFAULT_CONFIG_FILE = Path("configs/rl/fdg_grpo.yaml")
 
 

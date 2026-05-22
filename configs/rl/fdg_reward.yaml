@@ -19,7 +19,7 @@ runtime:
     formalizer_wait_ms: 500
     prover_wait_ms: 200
   formalizer:
-    model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
+    model_path: ${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-8B
     gpus: "3"
     tensor_parallel_size: 1
     num_workers: 1
@@ -38,7 +38,7 @@ runtime:
     chat_template_kwargs:
       enable_thinking: true
   prover:
-    model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
+    model_path: ${oc.env:CZX_ROOT}/models/Goedel-Prover-V2-8B
     gpus: "0,1,2"
     tensor_parallel_size: 1
     num_workers: 3
@@ -57,11 +57,11 @@ runtime:
     chat_template_kwargs:
       enable_thinking: true
   lean:
-    mathlib_path: /root/autodl-tmp/mathlib4
+    mathlib_path: ${oc.env:CZX_ROOT}/mathlib4
     backend: persistent_lsp
     check_concurrency: 128
     worker_pool_size: 0
-    temp_dir: /root/autodl-tmp/step-proof/results/fdg_builder_grpo/tmp/lean_jobs
+    temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/fdg_builder_grpo
   trace:
     enabled: true
-    out_dir: /root/autodl-tmp/step-proof/results/fdg_builder_grpo/cot_traces
+    out_dir: ${oc.env:CZX_ROOT}/czx_work/step-proof/results/fdg_builder_grpo/cot_traces

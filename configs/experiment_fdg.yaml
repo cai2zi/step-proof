@@ -2,7 +2,7 @@ exp:
   name: debug_exp_fdg
   root: results
 
-python: ${oc.env:PYTHON,python}
+python: ${oc.env:LEAN4_PYTHON}
 
 run:
   stages: [stage1, stage2, stage3, stats, cot, viz]
@@ -11,13 +11,13 @@ run:
   stream_logs_to_console: true
 
 stage1:
-  parquet_dir: /root/autodl-tmp/data_raw/ODA-Math-460k/data_2
+  parquet_dir: ${oc.env:CZX_ROOT}/data_raw/ODA-Math-460k/data_2
   parquet_glob: "*.parquet"
   id_column: id
   question_column: question
   response_column: response
   limit: 100
-  model_path: /root/autodl-tmp/models/Qwen3-8B
+  model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
   vllm_instances: 4
   parallel_startup: true
   startup_stagger_seconds: 0
@@ -42,11 +42,11 @@ stage1:
   include_think_in_dag: false
 
 lean_runtime:
-  mathlib_path: /root/autodl-tmp/mathlib4
+  mathlib_path: ${oc.env:CZX_ROOT}/mathlib4
   lean_backend: persistent_lsp
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
-  lean_temp_dir: lean_jobs_shared
+  lean_temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/${exp.name}
 
 stage2:
   gpus: 0,1,2,3
@@ -54,7 +54,7 @@ stage2:
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  formalizer_model_path: /root/autodl-tmp/models/Goedel-Formalizer-V2-8B
+  formalizer_model_path: ${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-8B
   formalizer_instances: 4
   formalizer_parallel_startup: true
   formalizer_startup_stagger_seconds: 0
@@ -81,7 +81,7 @@ stage3:
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
   max_pending_validation_batches: 4
-  prover_model_path: /root/autodl-tmp/models/Goedel-Prover-V2-8B
+  prover_model_path: ${oc.env:CZX_ROOT}/models/Goedel-Prover-V2-8B
   prover_instances: 4
   prover_parallel_startup: true
   prover_startup_stagger_seconds: 0

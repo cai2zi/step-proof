@@ -1,11 +1,11 @@
-output_root: /root/autodl-tmp/step-proof/experiments/rollout_rerank_math_verify/outputs
+output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs
 name: qwen3_8b_8
 
 env:
-  lean4_python: /root/autodl-tmp/env/lean4/bin/python
+  lean4_python: ${oc.env:LEAN4_PYTHON}
 
 data:
-  bench_path: /root/autodl-tmp/data_raw/bench/bench_all_normalized.parquet
+  bench_path: ${oc.env:CZX_ROOT}/data_raw/bench/bench_all_normalized.parquet
   id_column: id
   question_column: question
   gold_column: gold
@@ -30,7 +30,7 @@ prompt:
     {question}
 
 rollout:
-  model_path: /root/autodl-tmp/models/Qwen3-8B
+  model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
   instances: 4
   gpus: 0,1,2,3
   tensor_parallel_size: 1

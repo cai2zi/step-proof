@@ -10,12 +10,12 @@ Pipeline:
 
 Default environments:
 
-- Rollout and step-proof: `/root/autodl-tmp/env/lean4/bin/python`
-- Math-Verify: `/root/autodl-tmp/env/eval/bin/python`
+- Set `CZX_ROOT` to the machine workspace root, for example `/data/run01/scyb202/czx`.
+- Set `LEAN4_PYTHON` to the Python used by rollout, step-proof, and Math-Verify.
 
 ## Commands
 
-From `/root/autodl-tmp/step-proof`:
+From `${CZX_ROOT}/step-proof`:
 
 ```bash
 bash experiments/rollout_rerank_math_verify/scripts/run_all.sh default
@@ -76,7 +76,7 @@ omni_math_test
 
 ## Key Outputs
 
-Under `outputs`:
+Under `${CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs`:
 
 - `rollouts/rollout_qwen3_8b/rollout_raw.jsonl`
 - `rollouts/rollout_qwen3_8b/rollout_flat.parquet`

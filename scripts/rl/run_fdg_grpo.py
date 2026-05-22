@@ -32,7 +32,7 @@ def _infer_verl_root(project_root: Path) -> Path:
     sibling = project_root.parent / "verl"
     if sibling.exists():
         return sibling
-    return Path("/root/autodl-tmp/verl")
+    return Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx")) / "verl"
 
 
 def _python_site_paths(python_bin: str) -> List[Path]:

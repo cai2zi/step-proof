@@ -9,10 +9,11 @@ from typing import Any
 
 import pandas as pd
 
+from path_defaults import default_rollout_flat, rollouts_root
 
 EXP_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE_FLAT = EXP_DIR / "outputs" / "rollouts" / "rollout_qwen3_8b" / "rollout_flat.parquet"
-DEFAULT_OUT_ROOT = EXP_DIR / "outputs" / "rollouts"
+DEFAULT_SOURCE_FLAT = default_rollout_flat("qwen3_8b")
+DEFAULT_OUT_ROOT = rollouts_root()
 
 
 def parse_args() -> argparse.Namespace:

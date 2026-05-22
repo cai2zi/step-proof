@@ -5,9 +5,13 @@ import argparse
 import csv
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+CZX_ROOT = Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx"))
+REWARD_SAMPLE_ROOT = CZX_ROOT / "czx_work" / "step-proof" / "results" / "fdg_builder_grpo" / "reward_samples"
 
 
 @dataclass
@@ -123,11 +127,11 @@ def main() -> None:
     parser.add_argument(
         "--input-jsonl",
         type=Path,
-        default="/root/autodl-tmp/step-proof/results/fdg_builder_grpo/reward_samples/train_reward_samples.jsonl",
-        help="输入 jsonl，例如 /root/autodl-tmp/step-proof/results/fdg_builder_grpo/reward_samples/train_reward_samples.jsonl",
+        default=REWARD_SAMPLE_ROOT / "train_reward_samples.jsonl",
+        help=f"输入 jsonl，例如 {REWARD_SAMPLE_ROOT / 'train_reward_samples.jsonl'}",
     )
-    parser.add_argument("--out-json", type=Path, default="/root/autodl-tmp/step-proof/results/fdg_builder_grpo/reward_samples/reward_dist_by_step.json", help="输出汇总 json")
-    parser.add_argument("--out-csv", type=Path, default="/root/autodl-tmp/step-proof/results/fdg_builder_grpo/reward_samples/reward_dist_by_step.csv", help="输出汇总 csv（可选）")
+    parser.add_argument("--out-json", type=Path, default=REWARD_SAMPLE_ROOT / "reward_dist_by_step.json", help="输出汇总 json")
+    parser.add_argument("--out-csv", type=Path, default=REWARD_SAMPLE_ROOT / "reward_dist_by_step.csv", help="输出汇总 csv（可选）")
     parser.add_argument("--bin-min", type=float, default=-1.0, help="直方图最小值（含）")
     parser.add_argument("--bin-max", type=float, default=1.0, help="直方图最大值（含）")
     parser.add_argument("--bin-width", type=float, default=0.05, help="直方图 bin 宽度")
@@ -270,4 +274,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

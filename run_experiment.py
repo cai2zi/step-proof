@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,27 @@ class ExperimentRunner:
             lean_worker_pool_size=int(cfg.lean_worker_pool_size),
             lean_temp_dir=str(self.shared_lean_temp_dir),
         )
+
+    def _cleanup_shared_lean_temp_dir(self) -> None:
+        path = self.shared_lean_temp_dir
+        resolved = path.resolve()
+        safe_roots = [
+            (Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx")) / "czx_work" / "TEMP" / "lean_jobs").resolve(),
+            Path(os.environ.get("LEAN_TEMP_ROOT", "")).expanduser().resolve() if os.environ.get("LEAN_TEMP_ROOT") else None,
+        ]
+        in_safe_root = any(
+            root is not None and resolved != root and resolved.is_relative_to(root)
+            for root in safe_roots
+        )
+        if path.name != "lean_jobs_shared" and not in_safe_root:
+            print(f"[cleanup] skip unsafe lean temp dir: {path}", flush=True)
+            return
+        if not path.exists():
+            return
+        if not path.is_dir():
+            raise RuntimeError(f"lean temp cleanup target is not a directory: {path}")
+        print(f"[cleanup] removing stage2/stage3 lean temp dir: {path}", flush=True)
+        shutil.rmtree(path)
 
     def prepare(self) -> None:
         self.exp_dir.mkdir(parents=True, exist_ok=True)
@@ -860,7 +882,10 @@ class ExperimentRunner:
                 run_stage3=run_stage3,
             )
         finally:
-            await runtime.aclose()
+            try:
+                await runtime.aclose()
+            finally:
+                self._cleanup_shared_lean_temp_dir()
 
     async def _run_stage1_then_shared_lean_stages(
         self,
@@ -886,7 +911,10 @@ class ExperimentRunner:
                     await prewarm_task
             raise
         finally:
-            await runtime.aclose()
+            try:
+                await runtime.aclose()
+            finally:
+                self._cleanup_shared_lean_temp_dir()
 
     def run(self) -> None:
         stages = set(str(stage) for stage in self.cfg.run.stages)

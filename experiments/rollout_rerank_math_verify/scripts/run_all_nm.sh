@@ -2,13 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=path_env.sh
+source "${SCRIPT_DIR}/path_env.sh"
 EXP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_NAME="${1:-API_nm}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
 CONFIG="${EXP_DIR}/configs/pipeline/${CONFIG_NAME}.yaml"
-PYTHON_BIN="${PYTHON:-${LEAN4_PYTHON:-/data/home/scyb202/.conda/envs/lean4-czx/bin/python}}"
+PYTHON_BIN="${PYTHON}"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"

@@ -4,8 +4,11 @@ set -euo pipefail
 CONFIG_PATH="${1:-configs/rl/fdg_grpo_412.yaml}"
 shift || true
 ray stop
+export CZX_ROOT="${CZX_ROOT:-/data/run01/scyb202/czx}"
+export LEAN4_PYTHON="${LEAN4_PYTHON:-/data/home/scyb202/.conda/envs/lean4-czx/bin/python}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-RESULTS_ROOT="${PROJECT_ROOT}/results"
+RESULTS_ROOT="${RL_RESULTS_ROOT:-${CZX_ROOT}/czx_work/step-proof/results}"
+export RL_RESULTS_ROOT="${RESULTS_ROOT}"
 EXPERIMENT_NAME="fdg_builder_grpo"
 EXPERIMENT_ROOT="${RESULTS_ROOT}/${EXPERIMENT_NAME}"
 BUILDER_GPUS="4,5,6,7"
@@ -44,4 +47,4 @@ CUDA_VISIBLE_DEVICES="${BUILDER_GPUS}" \
   --include-dashboard=false >/dev/null
 
 cd "${PROJECT_ROOT}"
-python scripts/rl/run_fdg_grpo.py --config "${CONFIG_PATH}" "$@"
+"${PYTHON:-${LEAN4_PYTHON}}" scripts/rl/run_fdg_grpo.py --config "${CONFIG_PATH}" "$@"

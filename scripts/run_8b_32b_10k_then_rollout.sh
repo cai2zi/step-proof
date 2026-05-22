@@ -5,7 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PROOF_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 WORKSPACE_ROOT="$(cd "${STEP_PROOF_ROOT}/.." && pwd)"
 
-PYTHON="${PYTHON:-python}"
+export CZX_ROOT="${CZX_ROOT:-/data/run01/scyb202/czx}"
+export LEAN4_PYTHON="${LEAN4_PYTHON:-/data/home/scyb202/.conda/envs/lean4-czx/bin/python}"
+export PYTHON="${PYTHON:-${LEAN4_PYTHON}}"
+export MODEL_ROOT="${MODEL_ROOT:-${CZX_ROOT}/models}"
 CONFIG_NAME="${CONFIG_NAME:-experiment_fdg}"
 
 run_exp() {
@@ -25,8 +28,8 @@ run_exp() {
     "$@"
 }
 
-run_exp "qwen8B_10k" "/root/autodl-tmp/models/Qwen3-8B"
-run_exp "qwen32B_10k" "/root/autodl-tmp/models/Qwen3-32B"
+run_exp "qwen8B_10k" "${MODEL_ROOT}/Qwen3-8B"
+run_exp "qwen32B_10k" "${MODEL_ROOT}/Qwen3-32B"
 
 echo "==> Running rollout"
 "${WORKSPACE_ROOT}/llm-infer/scripts/rollout.sh"
