@@ -43,7 +43,7 @@ stage1:
     dependency_structure: true
     origin_rules: true
     introduced_without_parents: true
-    all_facts_reach_answer: true
+    all_facts_reach_answer: false
 
   # API backend settings (OpenAI-compatible).
   #   export POLOAI_API_KEY='sk-...'   # keep API keys out of yaml
