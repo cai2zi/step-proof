@@ -1,9 +1,9 @@
 output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs
-name: reduce_prompt
+name: reduce_prompt # 真正的外层实验名
 rollout_name: qwen3_8b
 
 exp:
-  name: step_proof_results
+  name: step_proof_results # exp.name完全固定, 仅为了适配原本框架, 作为子文件夹, 包含3个stage
   root: ${output_root}/step_proofs/step_proof_${name}
 
 python: ${oc.env:LEAN4_PYTHON}

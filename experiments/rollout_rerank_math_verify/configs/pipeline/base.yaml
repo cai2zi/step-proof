@@ -1,7 +1,3 @@
 rollout_config: base
 step_proof_config: base
 eval_config: base
-
-rollout_name: qwen3_8b_except_gsm8k
-step_proof_name: reduce_prompt_16k
-stage1_backend: vllm

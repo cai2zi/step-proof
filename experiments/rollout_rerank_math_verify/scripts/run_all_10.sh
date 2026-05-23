@@ -12,25 +12,25 @@ PIPELINE_OVERRIDES=(
   "rollout_config=base"
   "step_proof_config=base"
   "eval_config=base"
-  "rollout_name=qwen3_8b_10_temp07"
-  "step_proof_name=reduce_prompt_API_10_temp07"
-  "stage1_backend=api"
 )
 
 ROLLOUT_OVERRIDES=(
-  "rollout.n=10"
-  "rollout.temperature=0.7"
+  "name=qwen3_8b_except_gsm8k"
 )
 
 STEP_PROOF_OVERRIDES=(
-  "stage2.gpus=1"
-  "stage3.gpus=2"
+  "rollout_name=qwen3_8b_except_gsm8k"
+  "name=reduce_prompt_API_10"
+  
+  
+  "stage1.backend=api"
+  "stage1.reuse_from_step_proof=reduce_prompt_API"
   "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B"
-  "stage2.formalizer_retries=1"
 )
 
 EVAL_OVERRIDES=(
-  "math_verify.random_seeds=[0,1,2,3]"
+  "rollout_name=qwen3_8b_except_gsm8k"
+  "step_proof_name=reduce_prompt_API_10"
 )
 
 run_pipeline "${CONFIG_NAME}" "$@"

@@ -118,9 +118,6 @@ else:
 print(cfg["rollout_config"])
 print(cfg["step_proof_config"])
 print(cfg["eval_config"])
-print(cfg["rollout_name"])
-print(cfg["step_proof_name"])
-print(cfg.get("stage1_backend", "vllm"))
 PY
 )
   local idx
@@ -128,34 +125,22 @@ PY
     stage_configs[$idx]="${stage_configs[$idx]%$'\r'}"
   done
 
-  local rollout_name="${stage_configs[3]}"
-  local step_proof_name="${stage_configs[4]}"
-  local stage1_backend="${stage_configs[5]}"
-  echo "[timing][pipeline] start $(ts) config=${config_name} rollout=${rollout_name} step_proof=${step_proof_name} stage1_backend=${stage1_backend}"
+  echo "[timing][pipeline] start $(ts) config=${config_name} rollout_config=${stage_configs[0]} step_proof_config=${stage_configs[1]} eval_config=${stage_configs[2]}"
 
   if [[ "${RUN_ROLLOUT:-true}" == "true" ]]; then
-    run_timed rollout bash "${SCRIPT_DIR}/01_rollout.sh" "${stage_configs[0]}" \
-      "name=${rollout_name}" \
-      "${ROLLOUT_ARGS[@]}"
+    run_timed rollout bash "${SCRIPT_DIR}/01_rollout.sh" "${stage_configs[0]}" "${ROLLOUT_ARGS[@]}"
   else
     echo "[timing][rollout] skip $(ts)"
   fi
 
   if [[ "${RUN_STEP_PROOF:-true}" == "true" ]]; then
-    run_timed step_proof bash "${SCRIPT_DIR}/02_step_proof.sh" "${stage_configs[1]}" \
-      "rollout_name=${rollout_name}" \
-      "name=${step_proof_name}" \
-      "stage1.backend=${stage1_backend}" \
-      "${STEP_PROOF_ARGS[@]}"
+    run_timed step_proof bash "${SCRIPT_DIR}/02_step_proof.sh" "${stage_configs[1]}" "${STEP_PROOF_ARGS[@]}"
   else
     echo "[timing][step_proof] skip $(ts)"
   fi
 
   if [[ "${RUN_EVAL:-true}" == "true" ]]; then
-    run_timed eval bash "${SCRIPT_DIR}/03_eval.sh" "${stage_configs[2]}" \
-      "rollout_name=${rollout_name}" \
-      "step_proof_name=${step_proof_name}" \
-      "${EVAL_ARGS[@]}"
+    run_timed eval bash "${SCRIPT_DIR}/03_eval.sh" "${stage_configs[2]}" "${EVAL_ARGS[@]}"
   else
     echo "[timing][eval] skip $(ts)"
   fi
