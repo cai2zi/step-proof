@@ -23,7 +23,7 @@ def _load_jsonl(path: Path) -> List[JsonDict]:
 
 
 def _node_fully_verified(node: JsonDict) -> bool:
-    if node.get("parent_fact_ids"):
+    if str(node.get("origin") or "").strip().lower() in {"derived", "answer"}:
         return bool((node.get("solved_lemma") or {}).get("lean_verify", False))
     return bool((node.get("formalization") or {}).get("lean_pass", False))
 
@@ -34,11 +34,19 @@ def _record_items(rec: JsonDict) -> List[JsonDict]:
 
 
 def _prove_required_items(items: List[JsonDict]) -> List[JsonDict]:
-    return [item for item in items if bool(item.get("parent_fact_ids"))]
+    return [
+        item
+        for item in items
+        if str(item.get("origin") or "").strip().lower() in {"derived", "answer"}
+    ]
 
 
 def _form_required_items(items: List[JsonDict]) -> List[JsonDict]:
-    return [item for item in items if bool(item.get("parent_fact_ids"))]
+    return [
+        item
+        for item in items
+        if str(item.get("origin") or "").strip().lower() in {"derived", "answer"}
+    ]
 
 
 def _record_all_nodes_prove_verified(rec: JsonDict) -> bool:
@@ -153,7 +161,11 @@ def main() -> None:
         form_verified = sum(
             1
             for node in form_required_nodes
-            if bool((node.get("formalization") or {}).get("lean_pass", False))
+            if node.get("form_status") == "success"
+            or (
+                bool((node.get("formalization") or {}).get("lean_pass", False))
+                and not bool((node.get("formalization") or {}).get("skipped", False))
+            )
         )
         total_prove_required_nodes += prove_required_count
         total_prove_verified_nodes += prove_verified

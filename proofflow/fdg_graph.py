@@ -11,31 +11,17 @@ from pydantic import BaseModel, Field, ValidationError
 from .prompt_builder import build_chat_messages
 
 
-LEGACY_FDG_ORIGINS = {
-    "problem",
-    "definition",
-    "derived",
-    "theorem",
-    "assumption",
-    "approximation",
-    "other",
-}
-ORIGIN4_FDG_ORIGINS = {
+FDG_ORIGINS = {
     "given",
     "introduced",
     "derived",
     "answer",
 }
-FDG_ORIGINS = LEGACY_FDG_ORIGINS
-FDG_ORIGIN_SCHEMAS = {
-    "legacy": LEGACY_FDG_ORIGINS,
-    "origin4": ORIGIN4_FDG_ORIGINS,
-}
-FDG_PROMPT_ORIGIN_SCHEMAS = {
-    "fdg": "legacy",
-    "fdg_v1": "legacy",
-    "fdg_origin4": "origin4",
-    "fdg_origin4_reduce": "origin4",
+DEFAULT_FDG_VALIDATION_CHECKS = {
+    "dependency_structure": True,
+    "origin_rules": True,
+    "introduced_without_parents": True,
+    "all_facts_reach_answer": True,
 }
 
 FDG_OUTPUT_TRUNCATED_RETRY_HINT = (
@@ -47,26 +33,13 @@ FDG_OUTPUT_TRUNCATED_RETRY_HINT = (
 JsonDict = Dict[str, Any]
 
 
-def _normalize_prompt_name(prompt_name: str | None) -> str:
-    name = str(prompt_name or "fdg").strip() or "fdg"
-    return name[:-3] if name.endswith(".md") else name
-
-
-def fdg_origin_schema_for_prompt(prompt_name: str | None) -> str:
-    name = _normalize_prompt_name(prompt_name)
-    return FDG_PROMPT_ORIGIN_SCHEMAS.get(name, "legacy")
-
-
-def fdg_allowed_origins_for_prompt(prompt_name: str | None) -> set[str]:
-    return set(FDG_ORIGIN_SCHEMAS[fdg_origin_schema_for_prompt(prompt_name)])
-
-
 class FactItem(BaseModel):
     fact_id: str = Field(..., description="Fact identifier like f_1")
     text: str = Field(..., description="Atomic mathematical fact")
     parent_fact_ids: List[str] = Field(default_factory=list)
     is_final_answer: bool = Field(default=False)
     origin: str = Field(..., description="Metadata origin")
+    skip: int = Field(default=0, description="Internal execution skip flag")
 
 
 class FDGDocument(BaseModel):
@@ -162,24 +135,14 @@ def _report_entry(
     return payload
 
 
-def _looks_non_atomic(text: str) -> bool:
-    lowered = f" {text.lower()} "
-    connectors = [" and ", " but ", ";", "；", " 并且", " 且", " 同时"]
-    indicator_count = sum(1 for marker in connectors if marker in lowered)
-    math_ops = len(re.findall(r"(=|<=|>=|<|>|\\le|\\ge)", text))
-    return indicator_count > 0 and math_ops >= 2
-
-
-def _contains_narrative_words(text: str) -> bool:
-    lowered = text.lower()
-    return any(word in lowered for word in ["therefore", "hence", "thus", "next", "then we", "we compute"])
-
-
-def _looks_like_case_assumption(text: str) -> bool:
-    lowered = text.lower().strip()
-    if lowered.startswith("if ") or lowered.startswith("under the assumption"):
-        return False
-    return bool(re.fullmatch(r"[a-zA-Z0-9_α-ωΑ-Ω\-\+\*/\^\(\)\| ]*(<|>|<=|>=|=)[a-zA-Z0-9_α-ωΑ-Ω\-\+\*/\^\(\)\| ]+", text.strip()))
+def normalize_fdg_validation_checks(value: Optional[JsonDict] = None) -> JsonDict:
+    checks = dict(DEFAULT_FDG_VALIDATION_CHECKS)
+    if not value:
+        return checks
+    for key in checks:
+        if key in value:
+            checks[key] = bool(value[key])
+    return checks
 
 
 def _join_parent_facts(parents: List[str]) -> str:
@@ -207,14 +170,30 @@ def fdg_final_fact_ids(facts: List[FactItem | JsonDict]) -> List[str]:
     return final_ids
 
 
-def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> JsonDict:
-    origin_schema = fdg_origin_schema_for_prompt(prompt_name)
-    allowed_origins = fdg_allowed_origins_for_prompt(prompt_name)
+def _mark_fact_skip_flags(document: FDGDocument, reachable_to_final: set[str]) -> None:
+    for fact in document.facts:
+        origin = fact.origin.strip().lower()
+        parent_ids = [parent_id.strip() for parent_id in fact.parent_fact_ids if parent_id.strip()]
+        if origin in {"given", "introduced"}:
+            fact.skip = 1
+        elif origin in {"derived", "answer"} and fact.fact_id in reachable_to_final and parent_ids:
+            fact.skip = 0
+        else:
+            fact.skip = 1
+
+
+def validate_fdg(
+    fdg: JsonDict | FDGDocument,
+    *,
+    validation_checks: Optional[JsonDict] = None,
+) -> JsonDict:
+    checks = normalize_fdg_validation_checks(validation_checks)
+    allowed_origins = set(FDG_ORIGINS)
     report: JsonDict = {
         "passed": False,
         "errors": [],
         "warnings": [],
-        "origin_schema": origin_schema,
+        "validation_checks": checks,
     }
     errors: List[JsonDict] = report["errors"]
     warnings: List[JsonDict] = report["warnings"]
@@ -279,32 +258,15 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
                     fact_id=fact_id,
                 )
             )
-        # 去除非原子事实的警告
-        # if _looks_non_atomic(text):
-        #     warnings.append(
-        #         _report_entry(
-        #             "possibly_non_atomic_fact",
-        #             "This fact appears to contain multiple assertions.",
-        #             fact_id=fact_id,
-        #         )
-        #     )
-        # if _contains_narrative_words(text): # 去除描述性文字的警告
-        #     warnings.append(
-        #         _report_entry(
-        #             "narrative_fact_text",
-        #             "This fact contains narrative wording and may not be purely factual.",
-        #             fact_id=fact_id,
-        #         )
-        #     )
 
     final_ids = [fact.fact_id for fact in document.facts if fact.is_final_answer]
     if not final_ids:
         errors.append(_report_entry("missing_final_answer", "At least one fact must have is_final_answer=true."))
-    if origin_schema == "origin4" and len(final_ids) > 1:
+    if len(final_ids) > 1:
         errors.append(
             _report_entry(
                 "multiple_final_answers",
-                "The fdg_origin4 schema requires exactly one fact with is_final_answer=true.",
+                "The FDG schema requires exactly one fact with is_final_answer=true.",
             )
         )
 
@@ -315,15 +277,16 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
         parent_ids = [parent_id.strip() for parent_id in fact.parent_fact_ids if parent_id.strip()]
         for parent_id in parent_ids:
             if parent_id not in id_to_fact:
-                errors.append(
-                    _report_entry(
-                        "missing_parent_fact",
-                        f"Parent fact {parent_id} does not exist.",
-                        fact_id=fact_id,
+                if checks["dependency_structure"]:
+                    errors.append(
+                        _report_entry(
+                            "missing_parent_fact",
+                            f"Parent fact {parent_id} does not exist.",
+                            fact_id=fact_id,
+                        )
                     )
-                )
                 continue
-            if id_to_index[parent_id] >= index:
+            if checks["dependency_structure"] and id_to_index[parent_id] >= index:
                 errors.append(
                     _report_entry(
                         "forward_parent_fact",
@@ -335,64 +298,46 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
             reverse_adjacency[fact_id].append(parent_id)
 
         origin = fact.origin.strip().lower()
-        if origin_schema == "origin4":
-            if origin == "given" and parent_ids:
-                errors.append(
-                    _report_entry(
-                        "given_fact_with_parents",
-                        "A given fact must not have parent_fact_ids.",
-                        fact_id=fact_id,
-                    )
+        if checks["origin_rules"] and origin == "given" and parent_ids:
+            errors.append(
+                _report_entry(
+                    "given_fact_with_parents",
+                    "A given fact must not have parent_fact_ids.",
+                    fact_id=fact_id,
                 )
-            if origin == "derived" and not parent_ids:
-                errors.append(
-                    _report_entry(
-                        "derived_without_parents",
-                        "A derived fact must list at least one parent_fact_ids entry.",
-                        fact_id=fact_id,
-                    )
+            )
+        if checks["origin_rules"] and origin == "derived" and not parent_ids:
+            errors.append(
+                _report_entry(
+                    "derived_without_parents",
+                    "A derived fact must list at least one parent_fact_ids entry.",
+                    fact_id=fact_id,
                 )
-            if origin == "answer" and not fact.is_final_answer:
-                errors.append(
-                    _report_entry(
-                        "answer_origin_without_final_flag",
-                        'A fact with origin="answer" must have is_final_answer=true.',
-                        fact_id=fact_id,
-                    )
+            )
+        if origin == "answer" and not fact.is_final_answer:
+            errors.append(
+                _report_entry(
+                    "answer_origin_without_final_flag",
+                    'A fact with origin="answer" must have is_final_answer=true.',
+                    fact_id=fact_id,
                 )
-            if fact.is_final_answer and origin != "answer":
-                errors.append(
-                    _report_entry(
-                        "final_answer_origin_mismatch",
-                        'A final-answer fact must have origin="answer" under fdg_origin4.',
-                        fact_id=fact_id,
-                    )
+            )
+        if fact.is_final_answer and origin != "answer":
+            errors.append(
+                _report_entry(
+                    "final_answer_origin_mismatch",
+                    'A final-answer fact must have origin="answer".',
+                    fact_id=fact_id,
                 )
-        else:
-            if origin == "derived" and not parent_ids:
-                errors.append(
-                    _report_entry(
-                        "derived_without_parents",
-                        "A derived fact must list at least one parent_fact_ids entry.",
-                        fact_id=fact_id,
-                    )
+            )
+        if checks["introduced_without_parents"] and origin == "introduced" and parent_ids:
+            errors.append(
+                _report_entry(
+                    "introduced_fact_with_parents",
+                    "An introduced fact must not have parent_fact_ids.",
+                    fact_id=fact_id,
                 )
-            if origin == "problem" and parent_ids:
-                errors.append(
-                    _report_entry(
-                        "problem_fact_with_parents",
-                        "A problem-origin fact should not have parent_fact_ids.",
-                        fact_id=fact_id,
-                    )
-                )
-            if origin == "assumption" and not parent_ids and _looks_like_case_assumption(fact.text):
-                warnings.append(
-                    _report_entry(
-                        "possible_globalized_case_assumption",
-                        "This assumption looks like a local case assumption promoted to a root fact.",
-                        fact_id=fact_id,
-                    )
-                )
+            )
         if fact.is_final_answer and not parent_ids and fact.text.strip() not in document.problem_text:
             warnings.append(
                 _report_entry(
@@ -416,10 +361,11 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
         visit_state[node_id] = 2
         return False
 
-    for fact_id in adjacency:
-        if visit_state[fact_id] == 0 and has_cycle(fact_id):
-            errors.append(_report_entry("cycle_detected", "The FDG contains a cycle.", fact_id=fact_id))
-            break
+    if checks["dependency_structure"]:
+        for fact_id in adjacency:
+            if visit_state[fact_id] == 0 and has_cycle(fact_id):
+                errors.append(_report_entry("cycle_detected", "The FDG contains a cycle.", fact_id=fact_id))
+                break
 
     reachable_to_final: set[str] = set()
     stack = list(final_ids)
@@ -430,8 +376,10 @@ def validate_fdg(fdg: JsonDict | FDGDocument, *, prompt_name: str = "fdg") -> Js
         reachable_to_final.add(current)
         stack.extend(reverse_adjacency.get(current, []))
 
+    _mark_fact_skip_flags(document, reachable_to_final)
+
     for fact in document.facts:
-        if fact.fact_id not in reachable_to_final:
+        if checks["all_facts_reach_answer"] and fact.fact_id not in reachable_to_final:
             errors.append(
                 _report_entry(
                     "dead_end_fact",
@@ -461,7 +409,7 @@ def build_fdg_messages(
     problem_text: str,
     solution_or_cot: str,
     include_think_in_dag: bool = True,
-    prompt_name: str = "fdg",
+    prompt_name: str = "fdg_origin4_reduce",
 ) -> List[Dict[str, str]]:
     if not problem_text or not solution_or_cot:
         raise ValueError("FDG generation requires non-empty problem_text and solution_or_cot.")
@@ -474,7 +422,11 @@ def build_fdg_messages(
     )
 
 
-def parse_and_validate_fdg(content: str, *, prompt_name: str = "fdg") -> FDGParseResult:
+def parse_and_validate_fdg(
+    content: str,
+    *,
+    validation_checks: Optional[JsonDict] = None,
+) -> FDGParseResult:
     try:
         raw_payload = parse_llm_json(content)
     except Exception as exc:
@@ -485,7 +437,7 @@ def parse_and_validate_fdg(content: str, *, prompt_name: str = "fdg") -> FDGPars
         }
         return FDGParseResult(ok=False, document=None, error_msg=_format_report_for_retry(report), report=report)
 
-    report = validate_fdg(raw_payload, prompt_name=prompt_name)
+    report = validate_fdg(raw_payload, validation_checks=validation_checks)
     if not report["passed"]:
         return FDGParseResult(
             ok=False,
@@ -495,6 +447,7 @@ def parse_and_validate_fdg(content: str, *, prompt_name: str = "fdg") -> FDGPars
         )
 
     document = FDGDocument.model_validate(raw_payload)
+    validate_fdg(document, validation_checks=validation_checks)
     return FDGParseResult(ok=True, document=document, error_msg=None, report=report)
 
 

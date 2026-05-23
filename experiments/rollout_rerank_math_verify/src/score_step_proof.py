@@ -21,7 +21,7 @@ from common import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Score rollout candidates by stage3 prove success on non-root facts.",
+        description="Score rollout candidates by stage3 prove success on derived/answer facts.",
     )
     parser.add_argument("--config", type=Path, required=True)
     args, overrides = parser.parse_known_args()
@@ -36,7 +36,11 @@ def _facts_from_stage3_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _prove_required_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [fact for fact in facts if fact.get("parent_fact_ids")]
+    return [
+        fact
+        for fact in facts
+        if str(fact.get("origin") or "").strip().lower() in {"derived", "answer"}
+    ]
 
 
 def _score_facts(facts: List[Dict[str, Any]]) -> Dict[str, Any]:

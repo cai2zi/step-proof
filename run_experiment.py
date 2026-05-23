@@ -469,7 +469,7 @@ class ExperimentRunner:
             "--max-retries",
             _cmd_value(_cfg_get(cfg, "max_retries", 3)),
             "--fdg-prompt",
-            _cmd_value(_cfg_get(cfg, "fdg_prompt", "fdg")),
+            _cmd_value(_cfg_get(cfg, "fdg_prompt", "fdg_origin4_reduce")),
             _bool_flag(bool(_cfg_get(cfg, "include_think_in_dag", True)), "include-think-in-dag"),
         ]
         api_args = [
@@ -490,6 +490,9 @@ class ExperimentRunner:
         chat_kwargs = _json_arg(_cfg_get(cfg, "chat_template_kwargs", None))
         if chat_kwargs:
             cmd.extend(["--chat-template-kwargs-json", chat_kwargs])
+        validation_checks = _json_arg(_cfg_get(cfg, "validation_checks", None))
+        if validation_checks:
+            cmd.extend(["--validation-checks-json", validation_checks])
         if not bool(self.cfg.run.resume):
             cmd.append("--no-resume")
         return cmd

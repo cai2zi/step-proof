@@ -129,7 +129,7 @@ def load_evaluator_config(config_path: str | Path) -> FDGRLEvaluatorConfig:
         scheduler=scheduler,
         trace=trace,
         include_prover=_coerce_bool(runtime.get("include_prover", True)),
-        fdg_prompt=str(runtime.get("fdg_prompt") or "fdg"),
+        fdg_prompt=str(runtime.get("fdg_prompt") or "fdg_origin4_reduce"),
     )
 
 
@@ -243,7 +243,7 @@ class FDGRLEvaluator:
         parsed_items = [
             parse_fdg_candidate(
                 item.model_output,
-                prompt_name=str((item.extra_info or {}).get("fdg_prompt") or self.config.fdg_prompt or "fdg"),
+                prompt_name=str((item.extra_info or {}).get("fdg_prompt") or self.config.fdg_prompt or "fdg_origin4_reduce"),
             )
             for item in inputs
         ]
