@@ -33,3 +33,7 @@ mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
 mkdir -p "${TRITON_CACHE_DIR}"
 mkdir -p "${HF_HOME}"
 mkdir -p "${TMPDIR}"
+
+export ELAN_HOME=/data/run01/scyb202/czx/.elan
+export CARGO_HOME=/data/run01/scyb202/czx/.cargo
+export PATH="$ELAN_HOME/bin:$CARGO_HOME/bin:$PATH"
