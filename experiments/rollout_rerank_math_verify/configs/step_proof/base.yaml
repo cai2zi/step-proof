@@ -1,6 +1,7 @@
 output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs
 name: reduce_prompt # 真正的外层实验名
 rollout_name: qwen3_8b
+gpus: 0,1,2,3
 
 exp:
   name: step_proof_results # exp.name完全固定, 仅为了适配原本框架, 作为子文件夹, 包含3个stage
@@ -66,7 +67,7 @@ stage1:
   startup_stagger_seconds: 0
   startup_timeout: 1800
   tensor_parallel_size: 1
-  gpus: 0,1,2,3
+  gpus: ${gpus}
   dtype: float16
   gpu_memory_utilization: 0.95
   top_k: 20
@@ -81,7 +82,7 @@ lean_runtime:
   lean_temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/${name}
 
 stage2:
-  gpus: 0
+  gpus: ${gpus}
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200
@@ -108,7 +109,7 @@ stage2:
   limit: -1
 
 stage3:
-  gpus: 0
+  gpus: ${gpus}
   dtype: float16
   gpu_memory_utilization: 0.95
   batch_wait_ms: 200

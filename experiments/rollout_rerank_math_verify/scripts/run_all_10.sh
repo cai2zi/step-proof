@@ -12,6 +12,7 @@ PIPELINE_OVERRIDES=(
   "rollout_config=base"
   "step_proof_config=base"
   "eval_config=base"
+  "gpus=0,1"
 )
 
 ROLLOUT_OVERRIDES=(

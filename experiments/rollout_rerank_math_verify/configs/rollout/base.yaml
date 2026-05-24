@@ -1,5 +1,6 @@
 output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs
 name: qwen3_8b_8
+gpus: 0,1,2,3
 
 env:
   lean4_python: ${oc.env:LEAN4_PYTHON}
@@ -32,7 +33,7 @@ prompt:
 rollout:
   model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
   instances: 4
-  gpus: 0,1,2,3
+  gpus: ${gpus}
   tensor_parallel_size: 1
   dtype: float16
   gpu_memory_utilization: 0.95

@@ -37,6 +37,12 @@ append_configured_overrides() {
   fi
 }
 
+hydra_string_override() {
+  local key="$1"
+  local value="$2"
+  printf "%s='%s'" "${key}" "${value}"
+}
+
 split_cli_overrides() {
   local arg
   for arg in "$@"; do
@@ -118,14 +124,28 @@ else:
 print(cfg["rollout_config"])
 print(cfg["step_proof_config"])
 print(cfg["eval_config"])
+print(cfg.get("gpus", ""))
 PY
 )
   local idx
   for idx in "${!stage_configs[@]}"; do
     stage_configs[$idx]="${stage_configs[$idx]%$'\r'}"
   done
+  local shared_gpus="${stage_configs[3]:-}"
+  if [[ -n "${shared_gpus}" ]]; then
+    ROLLOUT_ARGS+=(
+      "gpus=${shared_gpus}"
+      "rollout.gpus=${shared_gpus}"
+    )
+    STEP_PROOF_ARGS+=(
+      "$(hydra_string_override gpus "${shared_gpus}")"
+      "$(hydra_string_override stage1.gpus "${shared_gpus}")"
+      "$(hydra_string_override stage2.gpus "${shared_gpus}")"
+      "$(hydra_string_override stage3.gpus "${shared_gpus}")"
+    )
+  fi
 
-  echo "[timing][pipeline] start $(ts) config=${config_name} rollout_config=${stage_configs[0]} step_proof_config=${stage_configs[1]} eval_config=${stage_configs[2]}"
+  echo "[timing][pipeline] start $(ts) config=${config_name} rollout_config=${stage_configs[0]} step_proof_config=${stage_configs[1]} eval_config=${stage_configs[2]} gpus=${shared_gpus}"
 
   if [[ "${RUN_ROLLOUT:-true}" == "true" ]]; then
     run_timed rollout bash "${SCRIPT_DIR}/01_rollout.sh" "${stage_configs[0]}" "${ROLLOUT_ARGS[@]}"

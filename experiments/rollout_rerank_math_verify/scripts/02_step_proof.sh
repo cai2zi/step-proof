@@ -12,8 +12,33 @@ if [[ $# -gt 0 ]]; then
 fi
 PYTHON_BIN="${PYTHON}"
 
+quote_hydra_gpu_override() {
+  local arg="$1"
+  if [[ "${arg}" != *=* ]]; then
+    printf "%s" "${arg}"
+    return
+  fi
+
+  local key="${arg%%=*}"
+  local value="${arg#*=}"
+  case "${key}" in
+    gpus|*.gpus)
+      if [[ "${value}" == *,* && "${value}" != \'* && "${value}" != \"* && "${value}" != \[* ]]; then
+        printf "%s='%s'" "${key}" "${value}"
+        return
+      fi
+      ;;
+  esac
+  printf "%s" "${arg}"
+}
+
+HYDRA_ARGS=()
+for arg in "$@"; do
+  HYDRA_ARGS+=("$(quote_hydra_gpu_override "${arg}")")
+done
+
 cd "${STEP_PROOF_ROOT}"
 PYTHON="${PYTHON_BIN}" "${STEP_PROOF_ROOT}/scripts/run_experiment.sh" \
   --config-path "${EXP_DIR}/configs/step_proof" \
   --config-name "${CONFIG_NAME}" \
-  "$@"
+  "${HYDRA_ARGS[@]}"
