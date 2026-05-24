@@ -61,7 +61,7 @@ stage1:
   # vLLM backend settings.
   model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
   token_limit: 32768 # VLLM total tokens
-  vllm_instances: 4
+  vllm_instances: 1
   parallel_startup: True
   startup_stagger_seconds: 0
   startup_timeout: 1800
