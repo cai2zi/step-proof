@@ -736,6 +736,7 @@ class StepProofCompareApp:
                         "id": rid,
                         "success_ratio": row.get("success_ratio", ""),
                         "prove_required_nodes": prove_required_nodes,
+                        "skip_derived_nodes": row.get("skip_derived_nodes", ""),
                         "prove_success_nodes": row.get("prove_success_nodes", ""),
                         "lean_pass_nodes": row.get("lean_pass_nodes", ""),
                         "rollout_id": rollout,
@@ -1718,6 +1719,7 @@ HTML_PAGE = r"""<!doctype html>
               <th>success_ratio</th>
               <th>prove_success_nodes</th>
               <th>prove_required_nodes</th>
+              <th>skip_derived_nodes</th>
               <th>Skip math verify</th>
               <th>Math verify</th>
             </tr></thead>
@@ -1728,6 +1730,7 @@ HTML_PAGE = r"""<!doctype html>
               <td>${escapeHtml(row.success_ratio)}</td>
               <td>${escapeHtml(row.prove_success_nodes)}</td>
               <td>${escapeHtml(row.prove_required_nodes)}</td>
+              <td>${escapeHtml(row.skip_derived_nodes)}</td>
               <td>${row.math_verify_skipped ? `<span class="warn">yes</span>` : `<span class="ok">no</span>`}</td>
               <td>${row.math_verify_skipped ? `<span class="muted">n/a</span>` : boolMark(row.math_verify_correct)}</td>
             </tr>`).join("")}</tbody>
@@ -1942,7 +1945,7 @@ HTML_PAGE = r"""<!doctype html>
         <summary>
           <span class="rollout-head">
             <strong>${title}</strong>
-            <span class="muted">math_verify ${rollout.math_verify_correct ? "correct" : "wrong"} / score ${escapeHtml(rollout.success_ratio)} / proved ${escapeHtml(rollout.prove_success_nodes)}/${escapeHtml(rollout.prove_required_nodes)} / lean_pass ${escapeHtml(rollout.lean_pass_nodes)}</span>
+            <span class="muted">math_verify ${rollout.math_verify_correct ? "correct" : "wrong"} / score ${escapeHtml(rollout.success_ratio)} / proved ${escapeHtml(rollout.prove_success_nodes)}/${escapeHtml(rollout.prove_required_nodes)} (include skip_derived: ${escapeHtml(rollout.skip_derived_nodes)}) / lean_pass ${escapeHtml(rollout.lean_pass_nodes)}</span>
           </span>
         </summary>
         <div class="row" style="margin-top:8px;">

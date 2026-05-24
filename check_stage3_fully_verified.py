@@ -33,27 +33,37 @@ def _record_items(rec: JsonDict) -> List[JsonDict]:
     return items if isinstance(items, list) else []
 
 
-def _prove_required_items(items: List[JsonDict]) -> List[JsonDict]:
+def _prove_required_items(items: List[JsonDict], exclude_skipped_derived: bool = False) -> List[JsonDict]:
     return [
         item
         for item in items
         if str(item.get("origin") or "").strip().lower() in {"derived", "answer"}
+        and not (
+            exclude_skipped_derived
+            and str(item.get("origin") or "").strip().lower() == "derived"
+            and int(item.get("skip", 0)) == 1
+        )
     ]
 
 
-def _form_required_items(items: List[JsonDict]) -> List[JsonDict]:
+def _form_required_items(items: List[JsonDict], exclude_skipped_derived: bool = False) -> List[JsonDict]:
     return [
         item
         for item in items
         if str(item.get("origin") or "").strip().lower() in {"derived", "answer"}
+        and not (
+            exclude_skipped_derived
+            and str(item.get("origin") or "").strip().lower() == "derived"
+            and int(item.get("skip", 0)) == 1
+        )
     ]
 
 
-def _record_all_nodes_prove_verified(rec: JsonDict) -> bool:
+def _record_all_nodes_prove_verified(rec: JsonDict, exclude_skipped_derived: bool = False) -> bool:
     nodes = _record_items(rec)
     if not nodes:
         return False
-    required_nodes = _prove_required_items(nodes)
+    required_nodes = _prove_required_items(nodes, exclude_skipped_derived=exclude_skipped_derived)
     if not required_nodes:
         return False
     return all(
@@ -127,144 +137,152 @@ def main() -> None:
     total_records = len(rows)
     valid_records = 0
 
-    passed_ids: List[str] = []
-    prove_ratio_hist = _empty_histogram()
-    form_ratio_hist = _empty_histogram()
-    prove_bucket_ids: Dict[str, List[str]] = {k: [] for k in _bucket_order()}
-    final_answer_wrong_records = 0
+    def compute_stats(exclude_skipped_derived: bool) -> JsonDict:
+        passed_ids: List[str] = []
+        prove_ratio_hist = _empty_histogram()
+        form_ratio_hist = _empty_histogram()
+        prove_bucket_ids: Dict[str, List[str]] = {k: [] for k in _bucket_order()}
+        final_answer_wrong_records = 0
 
-    total_nodes = 0
-    total_prove_verified_nodes = 0
-    total_prove_required_nodes = 0
-    total_form_verified_nodes = 0
-    total_form_required_nodes = 0
+        total_nodes = 0
+        total_prove_verified_nodes = 0
+        total_prove_required_nodes = 0
+        total_form_verified_nodes = 0
+        total_form_required_nodes = 0
 
-    for rec in rows:
-        rid = str(rec.get("meta", {}).get("record_id", "")).strip()
-        nodes = _record_items(rec)
-        if not isinstance(nodes, list) or not nodes:
-            continue
+        for rec in rows:
+            rid = str(rec.get("meta", {}).get("record_id", "")).strip()
+            nodes = _record_items(rec)
+            if not isinstance(nodes, list) or not nodes:
+                continue
 
-        valid_records += 1
-        node_count = len(nodes)
-        total_nodes += node_count
+            node_count = len(nodes)
+            total_nodes += node_count
 
-        prove_required_nodes = _prove_required_items(nodes)
-        prove_required_count = len(prove_required_nodes)
-        prove_verified = sum(
-            1
-            for node in prove_required_nodes
-            if bool((node.get("solved_lemma") or {}).get("lean_verify", False))
-        )
-        form_required_nodes = _form_required_items(nodes)
-        form_required_count = len(form_required_nodes)
-        form_verified = sum(
-            1
-            for node in form_required_nodes
-            if node.get("form_status") == "success"
-            or (
-                bool((node.get("formalization") or {}).get("lean_pass", False))
-                and not bool((node.get("formalization") or {}).get("skipped", False))
+            prove_required_nodes = _prove_required_items(nodes, exclude_skipped_derived=exclude_skipped_derived)
+            prove_required_count = len(prove_required_nodes)
+            prove_verified = sum(
+                1
+                for node in prove_required_nodes
+                if bool((node.get("solved_lemma") or {}).get("lean_verify", False))
             )
-        )
-        total_prove_required_nodes += prove_required_count
-        total_prove_verified_nodes += prove_verified
-        total_form_verified_nodes += form_verified
-        total_form_required_nodes += form_required_count
+            form_required_nodes = _form_required_items(nodes, exclude_skipped_derived=exclude_skipped_derived)
+            form_required_count = len(form_required_nodes)
+            form_verified = sum(
+                1
+                for node in form_required_nodes
+                if node.get("form_status") == "success"
+                or (
+                    bool((node.get("formalization") or {}).get("lean_pass", False))
+                    and not bool((node.get("formalization") or {}).get("skipped", False))
+                )
+            )
+            total_prove_required_nodes += prove_required_count
+            total_prove_verified_nodes += prove_verified
+            total_form_verified_nodes += form_verified
+            total_form_required_nodes += form_required_count
 
-        prove_percent = (
-            (prove_verified / prove_required_count) * 100.0
-            if prove_required_count
+            prove_percent = (
+                (prove_verified / prove_required_count) * 100.0
+                if prove_required_count
+                else 0.0
+            )
+            form_percent = (form_verified / form_required_count) * 100.0 if form_required_count else 0.0
+            prove_bucket = _bucket_label_by_percent(prove_percent)
+            form_bucket = _bucket_label_by_percent(form_percent)
+            prove_ratio_hist[prove_bucket] += 1
+            form_ratio_hist[form_bucket] += 1
+            prove_bucket_ids[prove_bucket].append(rid)
+
+            if _record_all_nodes_prove_verified(rec, exclude_skipped_derived=exclude_skipped_derived):
+                passed_ids.append(rid)
+
+            final_nodes_required = [node for node in nodes if bool(node.get("is_final_answer"))]
+            final_wrong = any(
+                not bool((node.get("solved_lemma") or {}).get("lean_verify", False))
+                for node in final_nodes_required
+            )
+            if final_wrong:
+                final_answer_wrong_records += 1
+
+        passed = len(passed_ids)
+        passed_ratio = (passed / valid_records * 100.0) if valid_records else 0.0
+        final_answer_wrong_ratio = (
+            (final_answer_wrong_records / valid_records) * 100.0 if valid_records else 0.0
+        )
+        prove_global_ratio = (
+            (total_prove_verified_nodes / total_prove_required_nodes) * 100.0
+            if total_prove_required_nodes
             else 0.0
         )
-        form_percent = (form_verified / form_required_count) * 100.0 if form_required_count else 0.0
-        prove_bucket = _bucket_label_by_percent(prove_percent)
-        form_bucket = _bucket_label_by_percent(form_percent)
-        prove_ratio_hist[prove_bucket] += 1
-        form_ratio_hist[form_bucket] += 1
-        prove_bucket_ids[prove_bucket].append(rid)
-
-        if _record_all_nodes_prove_verified(rec):
-            passed_ids.append(rid)
-
-        final_nodes_required = [node for node in nodes if bool(node.get("is_final_answer"))]
-        final_wrong = any(
-            not bool((node.get("solved_lemma") or {}).get("lean_verify", False))
-            for node in final_nodes_required
+        form_global_ratio = (
+            (total_form_verified_nodes / total_form_required_nodes) * 100.0
+            if total_form_required_nodes
+            else 0.0
         )
-        if final_wrong:
-            final_answer_wrong_records += 1
 
-    passed = len(passed_ids)
-    passed_ratio = (passed / valid_records * 100.0) if valid_records else 0.0
-    final_answer_wrong_ratio = (
-        (final_answer_wrong_records / valid_records) * 100.0 if valid_records else 0.0
-    )
-    prove_global_ratio = (
-        (total_prove_verified_nodes / total_prove_required_nodes) * 100.0
-        if total_prove_required_nodes
-        else 0.0
-    )
-    form_global_ratio = (
-        (total_form_verified_nodes / total_form_required_nodes) * 100.0
-        if total_form_required_nodes
-        else 0.0
-    )
+        return {
+            "all_nodes_prove_verified_records": passed,
+            "all_nodes_prove_verified_records_ratio": round(passed_ratio, 6),
+            "final_answer_wrong_records": final_answer_wrong_records,
+            "final_answer_wrong_records_ratio": round(final_answer_wrong_ratio, 6),
+            "prove_verify_ratio_distribution_by_record": prove_ratio_hist,
+            "form_verify_ratio_distribution_by_record": form_ratio_hist,
+            "global_nodes_total": total_nodes,
+            "global_prove_required_nodes_total": total_prove_required_nodes,
+            "global_form_required_nodes_total": total_form_required_nodes,
+            "global_prove_verified_nodes": total_prove_verified_nodes,
+            "global_prove_verified_nodes_ratio": round(prove_global_ratio, 6),
+            "global_form_verified_nodes": total_form_verified_nodes,
+            "global_form_verified_nodes_ratio": round(form_global_ratio, 6),
+            "prove_verify_ratio_distribution_top_ids": {
+                key: ids[: max(args.top_n_per_bucket, 0)]
+                for key, ids in prove_bucket_ids.items()
+            },
+            "prove_verify_ratio_distribution_top5_ids": {
+                key: ids[:5] for key, ids in prove_bucket_ids.items()
+            },
+        }
+
+    stats_include = compute_stats(exclude_skipped_derived=False)
+    stats_exclude = compute_stats(exclude_skipped_derived=True)
 
     print(f"total_records_in_jsonl: {total_records}")
     print(f"valid_records_with_nodes: {valid_records}")
     print()
-    print(f"all_nodes_prove_verified_records: {passed}")
-    print(f"all_nodes_prove_verified_records_ratio: {passed_ratio:.2f}%")
+    print(f"all_nodes_prove_verified_records: {stats_include['all_nodes_prove_verified_records']}")
+    print(f"all_nodes_prove_verified_records_ratio: {stats_include['all_nodes_prove_verified_records_ratio']:.2f}%")
     print()
     _print_histogram(
         "prove_verify_ratio_distribution_by_record (10% step):",
-        prove_ratio_hist,
+        stats_include["prove_verify_ratio_distribution_by_record"],
     )
     print()
     _print_histogram(
         "form_verify_ratio_distribution_by_record (10% step):",
-        form_ratio_hist,
+        stats_include["form_verify_ratio_distribution_by_record"],
     )
     print()
-    print(f"final_answer_wrong_records: {final_answer_wrong_records}")
-    print(f"final_answer_wrong_records_ratio: {final_answer_wrong_ratio:.2f}%")
+    print(f"final_answer_wrong_records: {stats_include['final_answer_wrong_records']}")
+    print(f"final_answer_wrong_records_ratio: {stats_include['final_answer_wrong_records_ratio']:.2f}%")
     print()
-    print(f"global_nodes_total: {total_nodes}")
-    print(f"global_prove_required_nodes_total: {total_prove_required_nodes}")
+    print(f"global_nodes_total: {stats_include['global_nodes_total']}")
+    print(f"global_prove_required_nodes_total: {stats_include['global_prove_required_nodes_total']}")
     print(
         "global_prove_verified_nodes: "
-        f"{total_prove_verified_nodes} ({prove_global_ratio:.2f}%)"
+        f"{stats_include['global_prove_verified_nodes']} ({stats_include['global_prove_verified_nodes_ratio']:.2f}%)"
     )
     print(
         "global_form_verified_nodes: "
-        f"{total_form_verified_nodes} ({form_global_ratio:.2f}%)"
+        f"{stats_include['global_form_verified_nodes']} ({stats_include['global_form_verified_nodes_ratio']:.2f}%)"
     )
 
     stats_payload: JsonDict = {
         "graph_mode": graph_mode,
         "total_records_in_jsonl": total_records,
         "valid_records_with_nodes": valid_records,
-        "all_nodes_prove_verified_records": passed,
-        "all_nodes_prove_verified_records_ratio": round(passed_ratio, 6),
-        "final_answer_wrong_records": final_answer_wrong_records,
-        "final_answer_wrong_records_ratio": round(final_answer_wrong_ratio, 6),
-        "prove_verify_ratio_distribution_by_record": prove_ratio_hist,
-        "form_verify_ratio_distribution_by_record": form_ratio_hist,
-        "global_nodes_total": total_nodes,
-        "global_prove_required_nodes_total": total_prove_required_nodes,
-        "global_form_required_nodes_total": total_form_required_nodes,
-        "global_prove_verified_nodes": total_prove_verified_nodes,
-        "global_prove_verified_nodes_ratio": round(prove_global_ratio, 6),
-        "global_form_verified_nodes": total_form_verified_nodes,
-        "global_form_verified_nodes_ratio": round(form_global_ratio, 6),
-        "prove_verify_ratio_distribution_top_ids": {
-            key: ids[: max(args.top_n_per_bucket, 0)]
-            for key, ids in prove_bucket_ids.items()
-        },
-        "prove_verify_ratio_distribution_top5_ids": {
-            key: ids[:5] for key, ids in prove_bucket_ids.items()
-        },
+        "include_skipped_derived": stats_include,
+        "exclude_skipped_derived": stats_exclude,
     }
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(
