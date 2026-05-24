@@ -33,6 +33,7 @@ STEP_PROOF_OVERRIDES=(
 
   # 实验配置
   "stage1.reuse_from_step_proof=full_000"
+  "stage1.reuse_require_all=true"
   "stage1.fdg_prompt=fdg_full_graph"
   "stage1.validation_checks.all_facts_reach_answer=false"
   "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B"
