@@ -25,7 +25,7 @@ stage1:
   question_column: question
   response_column: response
   limit: -1
-  reuse_from_step_proof: reduce_prompt_API
+  reuse_from_step_proof: reduce_prompt_API # 复用name
   reuse_require_all: true
 
   # Shared generation settings.
@@ -44,7 +44,7 @@ stage1:
     dependency_structure: true
     origin_rules: true
     introduced_without_parents: true
-    all_facts_reach_answer: false
+    all_facts_reach_answer: true
 
   # API backend settings (OpenAI-compatible).
   #   export POLOAI_API_KEY='sk-...'   # keep API keys out of yaml
@@ -136,7 +136,7 @@ stage3:
   limit: -1
 
 stats:
-  top_n_per_bucket: 100
+  top_n_per_bucket: 10
   show_ids: true
 
 cot_trace:

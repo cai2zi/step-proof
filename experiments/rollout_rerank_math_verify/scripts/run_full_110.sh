@@ -6,31 +6,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/run_pipeline_lib.sh"
 
 CONFIG_NAME="base"
-RUN_ROLLOUT=true
+RUN_ROLLOUT=false
 
 PIPELINE_OVERRIDES=(
   "rollout_config=base"
   "step_proof_config=base"
   "eval_config=base"
+  "gpus=0,1"
 )
 
 ROLLOUT_OVERRIDES=(
   "name=qwen3_8b_except_gsm8k"
+  "rollout.instances=2"
 )
 
 STEP_PROOF_OVERRIDES=(
+  # name
   "rollout_name=qwen3_8b_except_gsm8k"
-  "name=reduce_prompt_API_10"
-  
-  
-  "stage1.backend=vllm"
-  # "stage1.reuse_from_step_proof=reduce_prompt_API"
-  "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-8B"
+  "name=full_110"
+
+  # runtime config
+  "stage1.backend=api"
+  "stage2.formalizer_instances=2"
+  "stage3.prover_instances=2"
+
+  # experiment config
+  "stage1.reuse_from_step_proof=full_100"
+  "stage1.fdg_prompt=fdg_full_graph"
+  "stage1.validation_checks.all_facts_reach_answer=false"
+  "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B"
 )
 
 EVAL_OVERRIDES=(
   "rollout_name=qwen3_8b_except_gsm8k"
-  "step_proof_name=reduce_prompt_API_10"
+  "step_proof_name=full_110"
 )
 
 run_pipeline "${CONFIG_NAME}" "$@"
