@@ -60,6 +60,24 @@ def _ordered_fact_ids(record: RecordState) -> List[str]:
     return list(record["facts"].keys())
 
 
+def _coerce_skip(value: Any, default: int = 1) -> int:
+    if value is None:
+        return 0 if default == 0 else 1
+    try:
+        return 0 if int(value) == 0 else 1
+    except (TypeError, ValueError):
+        return 0 if default == 0 else 1
+
+
+def _ensure_skip_flags(facts: Dict[str, FactState]) -> None:
+    for fact in facts.values():
+        fact["skip"] = _coerce_skip(fact.get("skip"), default=1)
+
+
+def fdg_fact_should_execute(fact: FactState) -> bool:
+    return _coerce_skip(fact.get("skip"), default=1) == 0
+
+
 def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
     header_lines: List[str] = []
     body_lines: List[str] = []
@@ -161,6 +179,7 @@ def fdg_stage2_result_facts(record: RecordState) -> List[JsonDict]:
                 "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
                 "is_final_answer": bool(fact.get("is_final_answer", False)),
                 "origin": fact.get("origin", ""),
+                "skip": int(fact.get("skip", 1)),
                 "proof_obligation": fact.get("proof_obligation") or {},
                 "form_status": fact["form_status"],
                 "formalization": fact.get("formalization") or fdg_empty_formalization(),
@@ -180,6 +199,7 @@ def fdg_stage3_result_facts(record: RecordState) -> List[JsonDict]:
                 "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
                 "is_final_answer": bool(fact.get("is_final_answer", False)),
                 "origin": fact.get("origin", ""),
+                "skip": int(fact.get("skip", 1)),
                 "proof_obligation": fact.get("proof_obligation") or {},
                 "form_status": fact["form_status"],
                 "formalization": fact.get("formalization") or fdg_empty_formalization(),
@@ -207,6 +227,7 @@ def fdg_stage2_checkpoint_payload(record: RecordState) -> JsonDict:
                 "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
                 "is_final_answer": bool(fact.get("is_final_answer", False)),
                 "origin": fact.get("origin", ""),
+                "skip": int(fact.get("skip", 1)),
                 "proof_obligation": fact.get("proof_obligation") or {},
                 "form_status": fact["form_status"],
                 "form_retries_used": int(fact.get("form_retries_used", 0)),
@@ -235,6 +256,7 @@ def fdg_stage3_checkpoint_payload(record: RecordState) -> JsonDict:
                 "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
                 "is_final_answer": bool(fact.get("is_final_answer", False)),
                 "origin": fact.get("origin", ""),
+                "skip": int(fact.get("skip", 1)),
                 "proof_obligation": fact.get("proof_obligation") or {},
                 "form_status": fact["form_status"],
                 "formalization": fact.get("formalization") or fdg_empty_formalization(),
@@ -286,16 +308,15 @@ def fresh_fdg_stage2_record_state(raw: JsonDict) -> RecordState:
 
     facts: Dict[str, FactState] = {}
     for fact in document.facts:
-        root_fact = not fact.parent_fact_ids
         state: FactState = fact.model_dump()
-        state["proof_obligation"] = (
-            {} if root_fact else build_proof_obligation_from_fact(document, fact.fact_id)
-        )
+        state["skip"] = _coerce_skip(state.get("skip"), default=1)
+        should_execute = fdg_fact_should_execute(state)
+        state["proof_obligation"] = build_proof_obligation_from_fact(document, fact.fact_id) if should_execute else {}
         state["form_retries_used"] = 0
         state["form_messages"] = []
-        state["formalization"] = fdg_empty_formalization(skipped=root_fact)
+        state["formalization"] = fdg_empty_formalization(skipped=not should_execute)
         state["_form_enqueued"] = False
-        state["form_status"] = "skipped" if root_fact else "pending"
+        state["form_status"] = "pending" if should_execute else "skipped"
         facts[fact.fact_id] = state
 
     if "topo_order" not in graph:
@@ -326,6 +347,11 @@ def restore_fdg_stage2_record_state(raw: JsonDict) -> RecordState:
             restored["form_status"] = "pending"
         restored["_form_enqueued"] = False
         record["facts"][fact_id] = restored
+    _ensure_skip_flags(record["facts"])
+    for fact in record["facts"].values():
+        if not fdg_fact_should_execute(fact):
+            fact["form_status"] = "skipped"
+            fact["formalization"] = fdg_empty_formalization(skipped=True)
     return record
 
 
@@ -338,14 +364,16 @@ def fresh_fdg_stage3_record_state(raw: JsonDict) -> RecordState:
     facts: Dict[str, FactState] = {}
     for fact in result_facts:
         state = dict(fact)
+        state["skip"] = _coerce_skip(state.get("skip"), default=1)
         state["prove_retries_used"] = 0
         state["prove_messages"] = []
         state["prove_messages_raw"] = []
         state["_prove_enqueued"] = False
-        if not list(state.get("parent_fact_ids") or []):
+        formalization = state.get("formalization") or {}
+        if not fdg_fact_should_execute(state):
             state["prove_status"] = "skipped"
             state["solved_lemma"] = fdg_empty_solver(skipped=True)
-        elif (state.get("formalization") or {}).get("lean_code"):
+        elif formalization.get("lean_pass") and formalization.get("lean_code"):
             state["prove_status"] = "pending"
             state["solved_lemma"] = fdg_empty_solver()
         else:
@@ -378,4 +406,10 @@ def restore_fdg_stage3_record_state(raw: JsonDict) -> RecordState:
             restored["prove_status"] = "pending"
         restored["_prove_enqueued"] = False
         record["facts"][fact_id] = restored
+    _ensure_skip_flags(record["facts"])
+    for fact in record["facts"].values():
+        formalization = fact.get("formalization") or {}
+        if not fdg_fact_should_execute(fact) or not (formalization.get("lean_pass") and formalization.get("lean_code")):
+            fact["prove_status"] = "skipped"
+            fact["solved_lemma"] = fdg_empty_solver(skipped=True)
     return record

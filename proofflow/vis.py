@@ -6,7 +6,7 @@ import webbrowser
 import matplotlib.pyplot as plt
 import networkx as nx
 
-from .fdg_graph import ORIGIN4_FDG_ORIGINS
+from .fdg_graph import FDG_ORIGINS
 from .graph_mode import item_dependencies, item_id
 
 
@@ -48,7 +48,7 @@ def build_dag(data):
 
         if "fact_id" in node_dict:
             og = str(node_dict.get("origin") or "").strip().lower()
-            if og in ORIGIN4_FDG_ORIGINS:
+            if og in FDG_ORIGINS:
                 item_type = og
             elif node_dict.get("is_final_answer"):
                 item_type = "solution"
@@ -191,7 +191,7 @@ def create_interactive_visualization(
             elif info.get('formalization', {}).get('lean_pass', False):
                 contour_color = '#FFA500'  # Orange
         
-        # Node fill / shape: fdg_origin4 first, then legacy graph types
+        # Node fill / shape: FDG origins first, then fallback graph types
         if node_type == 'given':
             color = '#e8e4dc'
             shape = 'box'

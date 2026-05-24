@@ -43,9 +43,9 @@ from proofflow.fdg_graph import (
     FDGDocument,
     FDG_OUTPUT_TRUNCATED_RETRY_HINT,
     build_fdg_messages,
-    fdg_origin_schema_for_prompt,
     fdg_final_fact_ids,
     fdg_topo_order,
+    normalize_fdg_validation_checks,
     parse_llm_json,
     parse_and_validate_fdg,
 )
@@ -384,6 +384,7 @@ def _build_fdg_payload(
     document: FDGDocument,
     tries: int,
     include_think_in_dag: bool,
+    validation_checks: Dict[str, Any],
     conversation: List[Dict[str, str]],
     conversation_raw: List[Dict[str, str]],
     validation_warnings: List[Dict[str, Any]],
@@ -400,7 +401,7 @@ def _build_fdg_payload(
             "graph_build_tries": tries,
             "include_think_in_dag": include_think_in_dag,
             "fdg_prompt": record.fdg_prompt,
-            "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+            "validation_checks": dict(validation_checks),
         },
         "input": {
             "problem": record.problem,
@@ -428,7 +429,9 @@ def compact_fdg_response_for_retry(assistant_response: str) -> str:
     except Exception:
         return ""
     try:
-        parsed = FDGDocument.model_validate(parsed).model_dump()
+        parsed = FDGDocument.model_validate(parsed).model_dump(
+            exclude={"facts": {"__all__": {"skip"}}}
+        )
     except Exception:
         pass
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
@@ -777,7 +780,7 @@ class Stage1ResultHandler:
             "source_file": record.source_file,
             "source_row_pos": record.source_row_pos,
             "fdg_prompt": record.fdg_prompt,
-            "origin_schema": fdg_origin_schema_for_prompt(record.fdg_prompt),
+            "validation_checks": dict(getattr(self.args, "validation_checks", {}) or {}),
         }
 
     def _mark_terminal(self, key: str) -> None:
@@ -976,6 +979,7 @@ class Stage1ResultHandler:
             document,
             record.retry_count + 1,
             self.args.include_think_in_dag,
+            getattr(self.args, "validation_checks", {}),
             conversation,
             conversation_raw,
             warnings,
@@ -1045,7 +1049,10 @@ class Stage1ResultHandler:
             return
 
         parse_started = time.perf_counter()
-        result = parse_and_validate_fdg(content, prompt_name=record.fdg_prompt)
+        result = parse_and_validate_fdg(
+            content,
+            validation_checks=getattr(self.args, "validation_checks", None),
+        )
         parse_seconds = time.perf_counter() - parse_started
         self.timing_stats["parse_validate_seconds"] += parse_seconds
         if result.ok:
@@ -1150,8 +1157,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # FDG options
     parser.add_argument(
         "--fdg-prompt",
-        default="fdg",
+        default="fdg_origin4_reduce",
         help="FDG prompt file stem under prompts/{system,user}.",
+    )
+    parser.add_argument(
+        "--validation-checks-json",
+        default=None,
+        help="JSON object enabling optional FDG validation checks.",
     )
     parser.add_argument(
         "--include-think-in-dag",
@@ -1176,6 +1188,12 @@ def main() -> None:
         chat_template_kwargs = json.loads(args.chat_template_kwargs_json)
         if not isinstance(chat_template_kwargs, dict):
             raise SystemExit("--chat-template-kwargs-json must be a JSON object")
+    validation_checks = None
+    if args.validation_checks_json:
+        validation_checks = json.loads(args.validation_checks_json)
+        if not isinstance(validation_checks, dict):
+            raise SystemExit("--validation-checks-json must be a JSON object")
+    args.validation_checks = normalize_fdg_validation_checks(validation_checks)
 
     if not args.parquet_dir.is_dir():
         raise SystemExit(f"--parquet-dir is not a directory: {args.parquet_dir}")

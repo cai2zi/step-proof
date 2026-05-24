@@ -21,7 +21,7 @@ from common import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Score rollout candidates by stage3 prove success on non-root facts.",
+        description="Score rollout candidates by stage3 prove success on derived/answer facts.",
     )
     parser.add_argument("--config", type=Path, required=True)
     args, overrides = parser.parse_known_args()
@@ -35,17 +35,31 @@ def _facts_from_stage3_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     return facts if isinstance(facts, list) else []
 
 
-def _prove_required_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [fact for fact in facts if fact.get("parent_fact_ids")]
+def _prove_required_facts(facts: List[Dict[str, Any]], exclude_skipped_derived: bool = False) -> List[Dict[str, Any]]:
+    return [
+        fact
+        for fact in facts
+        if str(fact.get("origin") or "").strip().lower() in {"derived", "answer"}
+        and not (
+            exclude_skipped_derived
+            and str(fact.get("origin") or "").strip().lower() == "derived"
+            and int(fact.get("skip", 0)) == 1
+        )
+    ]
 
 
 def _score_facts(facts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    prove_facts = _prove_required_facts(facts)
-    prove_required_nodes = len(prove_facts)
+    prove_facts_all = _prove_required_facts(facts, exclude_skipped_derived=False)
+    prove_facts_excluded = _prove_required_facts(facts, exclude_skipped_derived=True)
+    
+    prove_required_nodes_all = len(prove_facts_all)
+    prove_required_nodes = len(prove_facts_excluded)
+    skip_derived_nodes = prove_required_nodes_all - prove_required_nodes
+    
     prove_success_nodes = 0
     lean_verify_nodes = 0
     lean_pass_nodes = 0
-    for fact in prove_facts:
+    for fact in prove_facts_all:
         solved = fact.get("solved_lemma") or {}
         if fact.get("prove_status") == "success":
             prove_success_nodes += 1
@@ -55,11 +69,12 @@ def _score_facts(facts: List[Dict[str, Any]]) -> Dict[str, Any]:
             lean_pass_nodes += 1
     return {
         "prove_required_nodes": prove_required_nodes,
+        "skip_derived_nodes": skip_derived_nodes,
         "prove_success_nodes": prove_success_nodes,
         "lean_verify_nodes": lean_verify_nodes,
         "lean_pass_nodes": lean_pass_nodes,
         "success_ratio": (
-            prove_success_nodes / prove_required_nodes if prove_required_nodes else 0.0
+            prove_success_nodes / prove_required_nodes_all if prove_required_nodes_all else 0.0
         ),
     }
 
@@ -102,6 +117,7 @@ def main() -> None:
             rid,
             {
                 "prove_required_nodes": 0,
+                "skip_derived_nodes": 0,
                 "prove_success_nodes": -1,
                 "lean_verify_nodes": -1,
                 "lean_pass_nodes": -1,

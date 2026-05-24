@@ -15,6 +15,7 @@ from .fdg_graph import FDG_OUTPUT_TRUNCATED_RETRY_HINT
 from .fdg_stage_common import (
     PROVE_TERMINAL,
     build_fdg_prove_messages,
+    fdg_fact_should_execute,
     fdg_stage3_checkpoint_payload,
     fdg_stage3_final_payload,
     fdg_stage3_record_terminal,
@@ -314,6 +315,9 @@ class FDGStage3Runner:
                 if fact is None:
                     continue
                 fact["_prove_enqueued"] = False
+                if not fdg_fact_should_execute(fact):
+                    fact["prove_status"] = "skipped"
+                    continue
                 if fact.get("prove_status") != "pending":
                     continue
                 fact["prove_status"] = "running"

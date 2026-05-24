@@ -39,6 +39,11 @@ stage1:
   max_retries: 3
   fdg_prompt: fdg_origin4_reduce
   include_think_in_dag: false
+  validation_checks:
+    dependency_structure: true
+    origin_rules: true
+    introduced_without_parents: true
+    all_facts_reach_answer: false
 
   # API backend settings (OpenAI-compatible).
   #   export POLOAI_API_KEY='sk-...'   # keep API keys out of yaml

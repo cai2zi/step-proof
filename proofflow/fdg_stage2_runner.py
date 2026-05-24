@@ -15,6 +15,7 @@ from .fdg_graph import FDG_OUTPUT_TRUNCATED_RETRY_HINT
 from .fdg_stage_common import (
     FORM_TERMINAL,
     build_fdg_form_messages,
+    fdg_fact_should_execute,
     fdg_stage2_checkpoint_payload,
     fdg_stage2_final_payload,
     fdg_stage2_record_terminal,
@@ -310,6 +311,9 @@ class FDGStage2Runner:
                 if fact is None:
                     continue
                 fact["_form_enqueued"] = False
+                if not fdg_fact_should_execute(fact):
+                    fact["form_status"] = "skipped"
+                    continue
                 if fact["form_status"] != "pending":
                     continue
                 fact["form_status"] = "running"

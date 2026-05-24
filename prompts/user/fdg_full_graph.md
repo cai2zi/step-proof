@@ -1,7 +1,7 @@
 Problem:
 {problem_text}
 
-Solution:
+Visible solution:
 {solution_or_cot}
 
 Return the FDG JSON with this exact top-level structure:
@@ -14,7 +14,10 @@ Return the FDG JSON with this exact top-level structure:
       "text": "...",
       "parent_fact_ids": [],
       "is_final_answer": false,
-      "origin": "problem"
+      "origin": "given"
     }}
   ]
 }}
+
+Allowed origin values are exactly "given", "introduced", "derived", and "answer".
+Output exactly one final answer fact with origin="answer" and is_final_answer=true.
