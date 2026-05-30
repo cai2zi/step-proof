@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def czx_root() -> Path:
-    return Path(os.environ.get("CZX_ROOT", "/data/run01/scyb202/czx")).expanduser()
+    return Path(os.environ.get("CZX_ROOT", r"D:\program\research")).expanduser()
 
 
 def project_root() -> Path:

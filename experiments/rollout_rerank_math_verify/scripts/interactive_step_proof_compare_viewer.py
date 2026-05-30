@@ -286,6 +286,14 @@ class ExperimentData:
 def _metrics_summary(metrics: JsonDict) -> JsonDict:
     pass_at_4 = metrics.get("pass_at_4") or metrics.get("pass_at_k") or {}
     selection = metrics.get("selection") or {}
+    random = metrics.get("random") or {}
+    random_runs: JsonDict = {}
+    if isinstance(random, dict):
+        for run in random.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            seed = run.get("seed", "")
+            random_runs[f"random_seed_{seed}"] = _fmt_pct(run.get("accuracy"))
     hit_rate = ""
     for key, value in selection.items():
         if key.startswith("hit_rate_on_"):
@@ -293,6 +301,7 @@ def _metrics_summary(metrics: JsonDict) -> JsonDict:
             break
     return {
         "total": metrics.get("total", ""),
+        "random_runs": random_runs,
         "pass_at_1": _fmt_pct((metrics.get("pass_at_1") or {}).get("accuracy")),
         "pass_at_4": _fmt_pct(pass_at_4.get("accuracy")),
         "ours": _fmt_pct((metrics.get("step_proof_best") or {}).get("accuracy")),
@@ -1859,13 +1868,22 @@ HTML_PAGE = r"""<!doctype html>
         document.getElementById("summaryTable").innerHTML = `<div class="muted">Scan a root with complete experiments.</div>`;
         return;
       }
+      const randomKeys = Array.from(new Set(complete.flatMap((exp) => Object.keys((exp.summary || {}).random_runs || {})))).sort((a, b) => {
+        const seedA = Number(a.replace("random_seed_", ""));
+        const seedB = Number(b.replace("random_seed_", ""));
+        if (Number.isFinite(seedA) && Number.isFinite(seedB)) return seedA - seedB;
+        return a.localeCompare(b);
+      });
+      const randomHeaders = randomKeys.map((key) => `<th>${escapeHtml(key)}</th>`).join("");
       document.getElementById("summaryTable").innerHTML = `<div class="table-wrap"><table>
-        <thead><tr><th>Experiment</th><th>Total</th><th>pass@1</th><th>pass@4</th><th>ours</th><th>selection hit</th></tr></thead>
+        <thead><tr><th>Experiment</th><th>Total</th>${randomHeaders}<th>pass@1</th><th>pass@4</th><th>ours</th><th>selection hit</th></tr></thead>
         <tbody>${complete.map((exp) => {
           const s = exp.summary || {};
+          const randomCells = randomKeys.map((key) => `<td>${escapeHtml(((s.random_runs || {})[key]) || "")}</td>`).join("");
           return `<tr>
             <td>${escapeHtml(exp.name)}</td>
             <td>${escapeHtml(s.total)}</td>
+            ${randomCells}
             <td>${escapeHtml(s.pass_at_1)}</td>
             <td>${escapeHtml(s.pass_at_4)}</td>
             <td>${escapeHtml(s.ours)}</td>
