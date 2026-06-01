@@ -125,7 +125,10 @@ def _fmt_pct(value: Any) -> str:
     if value is None:
         return ""
     try:
-        return f"{float(value) * 100:.2f}%"
+        number = float(value)
+        if math.isnan(number):
+            return ""
+        return f"{number * 100:.2f}%"
     except (TypeError, ValueError):
         return str(value)
 
@@ -277,6 +280,7 @@ class ExperimentData:
     scores_by_parent: Dict[str, List[JsonDict]]
     scores_by_id: Dict[str, JsonDict]
     eval_by_rollout: Dict[str, JsonDict]
+    random_eval_by_seed: Dict[int, List[JsonDict]]
     selected_eval_by_parent: Dict[str, JsonDict]
     pass_at_1_by_parent: Dict[str, bool]
     pass_at_k_by_parent: Dict[str, bool]
@@ -307,6 +311,12 @@ def _metrics_summary(metrics: JsonDict) -> JsonDict:
         "ours": _fmt_pct((metrics.get("step_proof_best") or {}).get("accuracy")),
         "selection_hit_rate": _fmt_pct(hit_rate),
     }
+
+
+def _accuracy(rows: List[JsonDict]) -> Optional[float]:
+    if not rows:
+        return None
+    return sum(1 for row in rows if _to_bool_correct(row.get("is_correct"))) / len(rows)
 
 
 class StepProofCompareApp:
@@ -376,6 +386,16 @@ class StepProofCompareApp:
         score_rows = _load_jsonl(exp_dir / "scores.jsonl")
         eval_rows = _load_jsonl(exp_dir / "math_verify" / "all_rollouts_eval.jsonl")
         selected_rows = _load_jsonl(exp_dir / "math_verify" / "step_proof_best_eval.jsonl")
+        random_eval_by_seed: Dict[int, List[JsonDict]] = {}
+        for random_path in sorted((exp_dir / "math_verify").glob("random_seed_*_eval.jsonl")):
+            stem = random_path.stem
+            seed_text = stem.removeprefix("random_seed_").removesuffix("_eval")
+            try:
+                seed = int(seed_text)
+            except ValueError:
+                continue
+            if random_path.stat().st_size > 0:
+                random_eval_by_seed[seed] = _load_jsonl(random_path)
 
         scores_by_parent: Dict[str, List[JsonDict]] = {}
         scores_by_id: Dict[str, JsonDict] = {}
@@ -424,6 +444,7 @@ class StepProofCompareApp:
             scores_by_parent=scores_by_parent,
             scores_by_id=scores_by_id,
             eval_by_rollout=eval_by_rollout,
+            random_eval_by_seed=random_eval_by_seed,
             selected_eval_by_parent=selected_eval_by_parent,
             pass_at_1_by_parent=pass_at_1_by_parent,
             pass_at_k_by_parent=pass_at_k_by_parent,
@@ -483,11 +504,132 @@ class StepProofCompareApp:
         self._stage2_cache[exp_name] = records
         return records
 
+    def _available_sources_from_metrics(self, statuses: Iterable[ExperimentStatus]) -> List[str]:
+        sources: set[str] = set()
+        for status in statuses:
+            metrics = status.metrics if isinstance(status.metrics, dict) else {}
+            random_payload = metrics.get("random") or {}
+            if isinstance(random_payload, dict):
+                for run in random_payload.get("runs") or []:
+                    if isinstance(run, dict) and isinstance(run.get("per_source"), dict):
+                        sources.update(str(source) for source in run["per_source"].keys() if str(source))
+            for key, payload in metrics.items():
+                if not isinstance(payload, dict):
+                    continue
+                per_source = payload.get("per_source")
+                if isinstance(per_source, dict):
+                    sources.update(str(source) for source in per_source.keys() if str(source))
+        return sorted(sources)
+
+    def _available_sources_from_data(self) -> List[str]:
+        sources: set[str] = set()
+        for name in self.complete_experiment_names():
+            data = self._load_data(name)
+            sources.update(source for source in data.parent_source.values() if source)
+        return sorted(sources)
+
+    def _default_sources(self, sources: Iterable[str]) -> List[str]:
+        return [source for source in sources if "gsm8k" not in source.lower()]
+
+    def _source_for_row(self, data: ExperimentData, row: JsonDict) -> str:
+        source = str(row.get("source") or "").strip()
+        if source:
+            return source
+        parent = _parent_id(row)
+        return data.parent_source.get(parent, "")
+
+    def _source_summary(self, exp_name: str, sources: Iterable[str]) -> JsonDict:
+        data = self._load_data(exp_name)
+        source_set = {str(source).strip() for source in sources if str(source).strip()}
+        parent_ids = {
+            parent
+            for parent, source in data.parent_source.items()
+            if source in source_set
+        }
+
+        selected_rows = [
+            row
+            for parent, row in data.selected_eval_by_parent.items()
+            if parent in parent_ids
+        ]
+        pass_at_1_rows = [
+            row
+            for row in data.eval_by_rollout.values()
+            if _parent_id(row) in parent_ids and _rollout_id(row) == 1
+        ]
+        pass_at_k_parents = [
+            parent
+            for parent in parent_ids
+            if parent in data.pass_at_k_by_parent
+        ]
+        pass_at_k_total = len(pass_at_k_parents)
+        pass_at_k_correct = sum(1 for parent in pass_at_k_parents if data.pass_at_k_by_parent.get(parent, False))
+        pass_at_k_accuracy = (pass_at_k_correct / pass_at_k_total) if pass_at_k_total else None
+        possible = [parent for parent in pass_at_k_parents if data.pass_at_k_by_parent.get(parent, False)]
+        selected_hits = sum(
+            1
+            for parent in possible
+            if _to_bool_correct((data.selected_eval_by_parent.get(parent) or {}).get("is_correct"))
+        )
+        selection_hit_rate = (selected_hits / len(possible)) if possible else None
+
+        seeds = set(data.random_eval_by_seed.keys())
+        random_metrics = (data.status.metrics.get("random") or {}) if isinstance(data.status.metrics, dict) else {}
+        if isinstance(random_metrics, dict):
+            for run in random_metrics.get("runs") or []:
+                if not isinstance(run, dict):
+                    continue
+                try:
+                    seeds.add(int(run.get("seed")))
+                except (TypeError, ValueError):
+                    pass
+        random_runs: JsonDict = {}
+        for seed in sorted(seeds):
+            rows = data.random_eval_by_seed.get(seed, [])
+            filtered = [
+                row
+                for row in rows
+                if self._source_for_row(data, row) in source_set
+            ]
+            random_runs[f"random_seed_{seed}"] = _fmt_pct(_accuracy(filtered))
+
+        return {
+            "total": len(selected_rows),
+            "random_runs": random_runs,
+            "pass_at_1": _fmt_pct(_accuracy(pass_at_1_rows)),
+            "pass_at_4": _fmt_pct(pass_at_k_accuracy),
+            "ours": _fmt_pct(_accuracy(selected_rows)),
+            "selection_hit_rate": _fmt_pct(selection_hit_rate),
+        }
+
     def experiments_payload(self) -> JsonDict:
         statuses = self.scan_experiments()
+        sources = self._available_sources_from_metrics(statuses)
         return {
             "root": str(self.results_root),
+            "sources": sources,
+            "default_sources": self._default_sources(sources),
             "experiments": [status.to_payload() for status in statuses],
+            "complete_names": [status.name for status in statuses if status.complete],
+        }
+
+    def source_summary_payload(self, sources: Iterable[str]) -> JsonDict:
+        statuses = self.scan_experiments()
+        available_sources = self._available_sources_from_metrics(statuses)
+        if not available_sources:
+            available_sources = self._available_sources_from_data()
+        selected_sources = [source for source in sources if not available_sources or source in available_sources]
+        experiments: List[JsonDict] = []
+        for status in statuses:
+            payload = status.to_payload()
+            if status.complete:
+                payload["summary"] = self._source_summary(status.name, selected_sources)
+            experiments.append(payload)
+        return {
+            "root": str(self.results_root),
+            "sources": available_sources,
+            "selected_sources": selected_sources,
+            "experiments": experiments,
             "complete_names": [status.name for status in statuses if status.complete],
         }
 
@@ -1460,6 +1602,13 @@ HTML_PAGE = r"""<!doctype html>
     }
     #viewer { width: 100%; height: 76vh; border: 0; background: #fff; border-radius: 8px; }
     .field-list label { display: inline-flex; gap: 4px; align-items: center; margin: 2px 8px 2px 0; }
+    .source-filter {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      margin: 8px 0 12px;
+    }
+    .source-filter label { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
     @media (max-width: 900px) {
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1508,6 +1657,8 @@ HTML_PAGE = r"""<!doctype html>
       <section id="experimentsTab" class="tab-panel active">
         <div class="panel">
           <h2>Experiment summary</h2>
+          <div class="muted">Sources</div>
+          <div id="sourceFilters" class="source-filter"></div>
           <div id="summaryTable"></div>
         </div>
       </section>
@@ -1548,6 +1699,10 @@ HTML_PAGE = r"""<!doctype html>
     const compareFields = __COMPARE_FIELDS__;
     let currentRoot = "";
     let completeNames = [];
+    let currentExperiments = [];
+    let availableSources = [];
+    let defaultSources = [];
+    let sourceSummaryRequestId = 0;
     let copyBlockCounter = 0;
     let currentGraphJson = "";
     let currentRolloutCopyRows = [];
@@ -1753,6 +1908,10 @@ HTML_PAGE = r"""<!doctype html>
       return Array.from(document.querySelectorAll('input[name="exp"]:checked')).map((el) => el.value);
     }
 
+    function selectedSources() {
+      return Array.from(document.querySelectorAll('input[name="sourceFilter"]:checked')).map((el) => el.value);
+    }
+
     function selectedCompareFields() {
       return Array.from(document.querySelectorAll('input[name="compareField"]:checked')).map((el) => el.value);
     }
@@ -1788,6 +1947,39 @@ HTML_PAGE = r"""<!doctype html>
       `).join("");
     }
 
+    function renderSourceFilters(sources, defaults) {
+      const el = document.getElementById("sourceFilters");
+      if (!sources.length) {
+        el.innerHTML = `<span class="muted">No sources found.</span>`;
+        return;
+      }
+      const defaultSet = new Set(defaults);
+      el.innerHTML = sources.map((source) => `
+        <label><input type="checkbox" name="sourceFilter" value="${escapeHtml(source)}" ${defaultSet.has(source) ? "checked" : ""}/> ${escapeHtml(source)}</label>
+      `).join("");
+      document.querySelectorAll('input[name="sourceFilter"]').forEach((box) => {
+        box.addEventListener("change", refreshSourceSummary);
+      });
+    }
+
+    async function refreshSourceSummary() {
+      const requestId = ++sourceSummaryRequestId;
+      const err = document.getElementById("sideError");
+      err.textContent = "";
+      document.getElementById("summaryTable").innerHTML = `<div class="muted">Recomputing summary for selected sources...</div>`;
+      try {
+        const sources = selectedSources();
+        const data = await getJSON(`/api/source_summary?root=${encodeURIComponent(currentRoot)}&sources=${encodeURIComponent(sources.join(","))}`);
+        if (requestId !== sourceSummaryRequestId) return;
+        currentExperiments = data.experiments || [];
+        completeNames = data.complete_names || [];
+        renderExperimentList(currentExperiments);
+        renderSummary(currentExperiments);
+      } catch (e) {
+        err.textContent = e.message || String(e);
+      }
+    }
+
     async function scanExperiments() {
       const root = document.getElementById("rootPath").value.trim();
       const err = document.getElementById("sideError");
@@ -1797,8 +1989,11 @@ HTML_PAGE = r"""<!doctype html>
         currentRoot = data.root;
         document.getElementById("rootPath").value = data.root;
         completeNames = data.complete_names || [];
-        renderExperimentList(data.experiments || []);
-        renderSummary(data.experiments || []);
+        currentExperiments = data.experiments || [];
+        availableSources = data.sources || [];
+        defaultSources = data.default_sources || availableSources.filter((source) => !String(source).toLowerCase().includes("gsm8k"));
+        renderSourceFilters(availableSources, defaultSources);
+        await refreshSourceSummary();
         setTab("experimentsTab");
       } catch (e) {
         err.textContent = e.message || String(e);
@@ -1826,14 +2021,17 @@ HTML_PAGE = r"""<!doctype html>
     function renderExperimentList(experiments) {
       const target = document.getElementById("experiments");
       const complete = experiments.filter((exp) => exp.complete);
+      const selected = new Set(selectedExpNames());
+      const hasSelection = selected.size > 0;
       if (!complete.length) {
         target.innerHTML = `<div class="error">No complete experiments found.</div>`;
       } else {
         target.innerHTML = complete.map((exp, idx) => {
           const s = exp.summary || {};
+          const checked = hasSelection ? selected.has(exp.name) : idx < 2;
           return `<div class="exp-card">
             <label>
-              <input type="checkbox" name="exp" value="${escapeHtml(exp.name)}" ${idx < 2 ? "checked" : ""}/>
+              <input type="checkbox" name="exp" value="${escapeHtml(exp.name)}" ${checked ? "checked" : ""}/>
               <span class="exp-name">${escapeHtml(exp.name)}</span>
             </label>
             <div class="metric-grid">
@@ -2187,6 +2385,18 @@ def create_handler(app: StepProofCompareApp):
                     app._stage2_cache.clear()
                     app._stage3_cache.clear()
                     _json_response(self, HTTPStatus.OK, app.experiments_payload())
+                    return
+                if parsed.path == "/api/source_summary":
+                    root = (query.get("root") or [""])[0].strip()
+                    if root and Path(root).expanduser().resolve() != app.results_root:
+                        app.results_root = Path(root).expanduser().resolve()
+                        app._status_cache = None
+                        app._data_cache.clear()
+                        app._stage1_cache.clear()
+                        app._stage2_cache.clear()
+                        app._stage3_cache.clear()
+                    selected_sources = _split_csv((query.get("sources") or [""])[0])
+                    _json_response(self, HTTPStatus.OK, app.source_summary_payload(selected_sources))
                     return
                 if parsed.path == "/api/problem":
                     root = (query.get("root") or [""])[0].strip()
