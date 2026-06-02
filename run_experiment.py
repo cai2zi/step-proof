@@ -708,6 +708,8 @@ class ExperimentRunner:
             _cmd_value(lean_cfg.lean_worker_pool_size),
             "--lean-temp-dir",
             str(self.shared_lean_temp_dir),
+            "--backend",
+            _cmd_value(_cfg_get(cfg, "backend", "vllm")),
             "--gpus",
             _cmd_value(cfg.gpus),
             "--dtype",
@@ -754,6 +756,21 @@ class ExperimentRunner:
             "--metrics-out",
             str(self.stats_dir / "stage2_runtime_stats.json"),
         ]
+        api_args = [
+            ("api_model", "--api-model"),
+            ("api_base_url", "--api-base-url"),
+            ("api_key_env", "--api-key-env"),
+            ("api_concurrency", "--api-concurrency"),
+            ("api_timeout", "--api-timeout"),
+            ("api_max_retries", "--api-max-retries"),
+            ("api_retry_sleep", "--api-retry-sleep"),
+            ("api_input_token_limit", "--api-input-token-limit"),
+            ("api_tokenizer_path", "--api-tokenizer-path"),
+        ]
+        for cfg_key, arg_name in api_args:
+            value = _cfg_get(cfg, cfg_key, None)
+            if value is not None:
+                cmd.extend([arg_name, _cmd_value(value)])
         chat_kwargs = _json_arg(cfg.formalizer_chat_template_kwargs)
         if chat_kwargs:
             cmd.extend(["--formalizer-chat-template-kwargs-json", chat_kwargs])

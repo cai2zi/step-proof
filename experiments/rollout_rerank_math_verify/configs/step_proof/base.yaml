@@ -82,6 +82,7 @@ lean_runtime:
   lean_temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/${name}
 
 stage2:
+  backend: vllm  # vllm | api
   gpus: ${gpus}
   dtype: float16
   gpu_memory_utilization: 0.95
@@ -107,6 +108,18 @@ stage2:
   formalizer_retries: 3
   form_batch_size: 128
   limit: -1
+
+  # API backend settings (OpenAI-compatible).
+  #   export POLOAI_API_KEY='sk-...'   # keep API keys out of yaml
+  api_model: gpt-5-mini
+  api_base_url: https://poloai.top/v1
+  api_key_env: POLOAI_API_KEY
+  api_concurrency: 32
+  api_timeout: 300
+  api_max_retries: 3
+  api_retry_sleep: 2.0
+  api_input_token_limit: 16384 # input tokens
+  api_tokenizer_path: ${stage2.formalizer_model_path}
 
 stage3:
   gpus: ${gpus}
