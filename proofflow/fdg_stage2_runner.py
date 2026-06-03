@@ -40,6 +40,8 @@ from .fdg_stage_common import (
 )
 from .lean_check import LeanServer
 from .llm_worker import LLMWorkerConfig, LLMWorkerPool
+from .pipeline.artifacts import stable_fingerprint
+from .pipeline.context_builders import FORMALIZER_CONTEXT_MODES, PARENT_ONLY
 from .runtime_common import (
     append_jsonl,
     extract_last_lean_block,
@@ -426,6 +428,10 @@ class FDGStage2Runner:
 
     def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
         prompt = str(getattr(self.args, "formalizer_prompt", "formalize_obligation") or "formalize_obligation")
+        context_mode = str(
+            getattr(self.args, "formalizer_context_mode", PARENT_ONLY) or PARENT_ONLY
+        )
+        fingerprint = self._stage_fingerprint()
         existing = str((record.get("meta") or {}).get("formalizer_prompt") or "")
         if existing and existing != prompt:
             rid = (record.get("meta") or {}).get("record_id", "<unknown>")
@@ -433,7 +439,53 @@ class FDGStage2Runner:
                 f"Record {rid} checkpoint was created with formalizer_prompt={existing!r}, "
                 f"but current config uses {prompt!r}. Use a new exp.name or disable resume."
             )
+        existing_context = str((record.get("meta") or {}).get("formalizer_context_mode") or "")
+        if existing_context and existing_context != context_mode:
+            rid = (record.get("meta") or {}).get("record_id", "<unknown>")
+            raise RuntimeError(
+                f"Record {rid} checkpoint was created with "
+                f"formalizer_context_mode={existing_context!r}, but current config uses "
+                f"{context_mode!r}. Use a new exp.name or disable resume."
+            )
+        existing_fingerprint = str((record.get("meta") or {}).get("stage_fingerprint") or "")
+        if existing_fingerprint and existing_fingerprint != fingerprint:
+            rid = (record.get("meta") or {}).get("record_id", "<unknown>")
+            raise RuntimeError(
+                f"Record {rid} checkpoint was created with "
+                f"stage_fingerprint={existing_fingerprint!r}, but current config uses "
+                f"{fingerprint!r}. Use a new exp.name or disable resume."
+            )
         record.setdefault("meta", {})["formalizer_prompt"] = prompt
+        record.setdefault("meta", {})["formalizer_context_mode"] = context_mode
+        record.setdefault("meta", {})["pipeline_schema_version"] = "step-proof-v2"
+        record.setdefault("meta", {})["stage_name"] = "stage2"
+        record.setdefault("meta", {})["stage_fingerprint"] = fingerprint
+
+    def _stage_fingerprint(self) -> str:
+        return stable_fingerprint(
+            {
+                "schema_version": "step-proof-v2",
+                "stage": "stage2",
+                "backend": self.args.backend,
+                "formalizer_prompt": self.args.formalizer_prompt,
+                "formalizer_context_mode": getattr(
+                    self.args,
+                    "formalizer_context_mode",
+                    PARENT_ONLY,
+                ),
+                "formalizer_model_path": self.args.formalizer_model_path,
+                "api_model": self.args.api_model,
+                "api_base_url": self.args.api_base_url,
+                "formalizer_max_tokens": self.args.formalizer_max_tokens,
+                "formalizer_token_limit": self.args.formalizer_token_limit,
+                "formalizer_temperature": self.args.formalizer_temperature,
+                "formalizer_top_p": self.args.formalizer_top_p,
+                "formalizer_presence_penalty": self.args.formalizer_presence_penalty,
+                "formalizer_frequency_penalty": self.args.formalizer_frequency_penalty,
+                "formalizer_seed": self.args.formalizer_seed,
+                "formalizer_top_k": self.args.formalizer_top_k,
+            }
+        )
 
     def _resolve_formalizer_gpus(self) -> str:
         if self.args.formalizer_gpus:
@@ -655,7 +707,9 @@ class FDGStage2Runner:
                 if not fact["form_messages"]:
                     fact["form_messages"] = build_fdg_form_messages(
                         fact,
+                        record=record,
                         prompt_name=self.args.formalizer_prompt,
+                        context_mode=self.args.formalizer_context_mode,
                     )
                 attempt_num = int(fact.get("form_retries_used", 0)) + 1
                 tasks.append(
@@ -810,6 +864,25 @@ class FDGStage2Runner:
         write_json_atomic(self.args.metrics_out, payload)
 
     async def run(self) -> None:
+        from .pipeline.fdg_stages import FormalizeStage
+        from .pipeline.lean_runtime import LeanRuntime
+        from .pipeline.specs import LeanSpec
+
+        lean_runtime = None
+        if self.lean_server is not None:
+            lean_runtime = LeanRuntime(
+                LeanSpec(
+                    mathlib_path=self.args.mathlib_path,
+                    backend=self.args.lean_backend,
+                    check_concurrency=self.args.lean_check_concurrency,
+                    worker_pool_size=self.args.lean_worker_pool_size,
+                    temp_dir=self.args.lean_temp_dir,
+                ),
+                lean_server=self.lean_server,
+            )
+        await FormalizeStage(self.args, lean_runtime=lean_runtime).run()
+        return
+
         self.stage_started_perf = time.perf_counter()
         if self.args.no_resume:
             for path in (self.out_path, self.failed_path):
@@ -944,6 +1017,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--formalizer-prompt",
         default="formalize_obligation",
         help="Formalizer prompt file stem under prompts/{system,user}.",
+    )
+    parser.add_argument(
+        "--formalizer-context-mode",
+        default=PARENT_ONLY,
+        choices=sorted(FORMALIZER_CONTEXT_MODES),
+        help="Context ablation mode used to build formalizer input.",
     )
     parser.add_argument(
         "--formalizer-retries",

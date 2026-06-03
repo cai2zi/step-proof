@@ -1,0 +1,24 @@
+config_name: base
+run_rollout: false
+pipeline_overrides:
+  - rollout_config=base
+  - step_proof_config=base
+  - eval_config=base
+  - gpus=0,1
+rollout_overrides:
+  - name=qwen3_8b_except_gsm8k
+  - rollout.instances=2
+step_proof_overrides:
+  - rollout_name=qwen3_8b_except_gsm8k
+  - name=full_graph__s1_api__f_32b_vllm
+  - stage1.backend=api
+  - stage2.formalizer_instances=2
+  - stage3.prover_instances=2
+  - stage1.reuse_from_step_proof=full_graph__s1_api__f_8b_vllm
+  - stage1.reuse_require_all=true
+  - stage1.fdg_prompt=fdg_full_graph
+  - stage1.validation_checks.all_facts_reach_answer=false
+  - stage2.formalizer_model_path=${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B
+eval_overrides:
+  - rollout_name=qwen3_8b_except_gsm8k
+  - step_proof_name=full_graph__s1_api__f_32b_vllm

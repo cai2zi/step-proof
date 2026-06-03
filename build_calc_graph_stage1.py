@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import concurrent.futures
 import json
 import os
@@ -1197,6 +1198,11 @@ def main() -> None:
 
     if not args.parquet_dir.is_dir():
         raise SystemExit(f"--parquet-dir is not a directory: {args.parquet_dir}")
+
+    from proofflow.pipeline.fdg_stages import GraphBuildStage
+
+    asyncio.run(GraphBuildStage(args).run())
+    return
 
     setup_started = time.perf_counter()
 

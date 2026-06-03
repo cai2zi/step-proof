@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Any, Dict, List
 
 from .fdg_graph import FDGDocument, build_proof_obligation_from_fact
+from .pipeline.context_builders import PARENT_ONLY, build_formalizer_context
 from .prompt_builder import build_chat_messages
 from .runtime_common import utc_now_iso
 
@@ -103,17 +104,44 @@ def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
 def build_fdg_form_messages(
     fact: FactState,
     *,
+    record: RecordState | None = None,
     prompt_name: str = "formalize_obligation",
+    context_mode: str = PARENT_ONLY,
 ) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
     problem_name = str(proof_obligation.get("problem_name") or f"prove_{fact['fact_id']}").strip()
     lemma_keyword = "theorem" if fact.get("is_final_answer") else "lemma"
+    informal_statement = str(proof_obligation.get("informal_statement_content", "")).strip()
+    if record is None:
+        formalizer_context = "\n\n".join(
+            [
+                "Current node:\n"
+                + str(
+                    {
+                        "fact_id": fact.get("fact_id", ""),
+                        "text": fact.get("text", ""),
+                        "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
+                        "origin": fact.get("origin", ""),
+                        "is_final_answer": bool(fact.get("is_final_answer", False)),
+                    }
+                ),
+                "Target natural language statement:\n" + informal_statement,
+            ]
+        )
+    else:
+        formalizer_context = build_formalizer_context(
+            record,
+            str(fact["fact_id"]),
+            mode=context_mode,
+        )
     return build_chat_messages(
         "formalize_obligation",
         prompt_name=prompt_name,
         lemma_header=f"{lemma_keyword} {problem_name}",
         paper_theorem_name="test",
-        informal_statement_content=str(proof_obligation.get("informal_statement_content", "")).strip(),
+        informal_statement_content=informal_statement,
+        formalizer_context=formalizer_context,
+        formalizer_context_mode=context_mode,
     )
 
 

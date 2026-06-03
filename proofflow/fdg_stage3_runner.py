@@ -24,6 +24,7 @@ from .fdg_stage_common import (
 )
 from .lean_check import LeanServer
 from .llm_worker import LLMWorkerConfig, LLMWorkerPool
+from .pipeline.artifacts import stable_fingerprint
 from .runtime_common import (
     append_jsonl,
     extract_last_lean_block,
@@ -136,6 +137,7 @@ class FDGStage3Runner:
 
     def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
         prompt = str(getattr(self.args, "prover_prompt", "prove") or "prove")
+        fingerprint = self._stage_fingerprint()
         existing = str((record.get("meta") or {}).get("prover_prompt") or "")
         if existing and existing != prompt:
             rid = (record.get("meta") or {}).get("record_id", "<unknown>")
@@ -143,7 +145,36 @@ class FDGStage3Runner:
                 f"Record {rid} checkpoint was created with prover_prompt={existing!r}, "
                 f"but current config uses {prompt!r}. Use a new exp.name or disable resume."
             )
+        existing_fingerprint = str((record.get("meta") or {}).get("stage_fingerprint") or "")
+        if existing_fingerprint and existing_fingerprint != fingerprint:
+            rid = (record.get("meta") or {}).get("record_id", "<unknown>")
+            raise RuntimeError(
+                f"Record {rid} checkpoint was created with "
+                f"stage_fingerprint={existing_fingerprint!r}, but current config uses "
+                f"{fingerprint!r}. Use a new exp.name or disable resume."
+            )
         record.setdefault("meta", {})["prover_prompt"] = prompt
+        record.setdefault("meta", {})["pipeline_schema_version"] = "step-proof-v2"
+        record.setdefault("meta", {})["stage_name"] = "stage3"
+        record.setdefault("meta", {})["stage_fingerprint"] = fingerprint
+
+    def _stage_fingerprint(self) -> str:
+        return stable_fingerprint(
+            {
+                "schema_version": "step-proof-v2",
+                "stage": "stage3",
+                "prover_prompt": self.args.prover_prompt,
+                "prover_model_path": self.args.prover_model_path,
+                "prover_max_tokens": self.args.prover_max_tokens,
+                "prover_token_limit": self.args.prover_token_limit,
+                "prover_temperature": self.args.prover_temperature,
+                "prover_top_p": self.args.prover_top_p,
+                "prover_presence_penalty": self.args.prover_presence_penalty,
+                "prover_frequency_penalty": self.args.prover_frequency_penalty,
+                "prover_seed": self.args.prover_seed,
+                "prover_top_k": self.args.prover_top_k,
+            }
+        )
 
     def _resolve_prover_gpus(self) -> str:
         if self.args.prover_gpus:
@@ -495,6 +526,25 @@ class FDGStage3Runner:
         write_json_atomic(self.args.metrics_out, payload)
 
     async def run(self) -> None:
+        from .pipeline.fdg_stages import ProveStage
+        from .pipeline.lean_runtime import LeanRuntime
+        from .pipeline.specs import LeanSpec
+
+        lean_runtime = None
+        if self.lean_server is not None:
+            lean_runtime = LeanRuntime(
+                LeanSpec(
+                    mathlib_path=self.args.mathlib_path,
+                    backend=self.args.lean_backend,
+                    check_concurrency=self.args.lean_check_concurrency,
+                    worker_pool_size=self.args.lean_worker_pool_size,
+                    temp_dir=self.args.lean_temp_dir,
+                ),
+                lean_server=self.lean_server,
+            )
+        await ProveStage(self.args, lean_runtime=lean_runtime).run()
+        return
+
         self.stage_started_perf = time.perf_counter()
         if self.args.no_resume:
             for path in (self.out_path, self.failed_path):

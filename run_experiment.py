@@ -245,6 +245,47 @@ class ExperimentRunner:
         if ended:
             payload["ended_at"] = _utc_now_iso()
         _write_json(self.stats_dir / "run_meta.json", payload)
+        self._write_manifest(run_meta=payload, ended=ended)
+
+    def _write_manifest(self, *, run_meta: JsonDict, ended: bool) -> None:
+        payload = {
+            "schema_version": "step-proof-v2",
+            "created_at": self.started_at,
+            "updated_at": _utc_now_iso(),
+            "status": "ended" if ended else "running",
+            "experiment": {
+                "name": str(_cfg_get(self.cfg, "name", self.cfg.exp.name)),
+                "exp_name": str(self.cfg.exp.name),
+                "exp_dir": str(self.exp_dir),
+            },
+            "command": sys.argv,
+            "run_meta": run_meta,
+            "config": OmegaConf.to_container(self.cfg, resolve=True),
+            "artifacts": {
+                "stage1": {
+                    "root": str(self.stage1_dir),
+                    "graphs": str(self.stage1_dir / "graphs.jsonl"),
+                    "skipped": str(self.stage1_dir / "skipped.jsonl"),
+                    "failed": str(self.stage1_dir / "failed.jsonl"),
+                },
+                "stage2": {
+                    "root": str(self.stage2_dir),
+                    "results": str(self.stage2_dir / "stage2_results.jsonl"),
+                    "failed": str(self.stage2_dir / "stage2_failed.jsonl"),
+                    "checkpoint_dir": str(self.stage2_dir / "stage2_ckpt"),
+                },
+                "stage3": {
+                    "root": str(self.stage3_dir),
+                    "results": str(self.stage3_dir / "stage3_results.jsonl"),
+                    "failed": str(self.stage3_dir / "stage3_failed.jsonl"),
+                    "checkpoint_dir": str(self.stage3_dir / "stage3_ckpt"),
+                },
+                "stats": str(self.stats_dir),
+                "cot_traces": str(self.cot_dir),
+                "visualizations": str(self.viz_dir),
+            },
+        }
+        _write_json(self.exp_dir / "manifest.json", payload)
 
     def _update_status(self, stage: str, payload: JsonDict) -> None:
         self.status[stage] = payload
@@ -751,6 +792,8 @@ class ExperimentRunner:
             _cmd_value(cfg.formalizer_retries),
             "--formalizer-prompt",
             _cmd_value(cfg.formalizer_prompt),
+            "--formalizer-context-mode",
+            _cmd_value(_cfg_get(cfg, "formalizer_context_mode", "parent_only")),
             "--form-batch-size",
             _cmd_value(cfg.form_batch_size),
             "--metrics-out",
