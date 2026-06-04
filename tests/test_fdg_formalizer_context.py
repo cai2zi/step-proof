@@ -7,6 +7,7 @@ import pytest
 
 from proofflow.fdg_stage2_runner import FDGStage2Runner, build_arg_parser
 from proofflow.fdg_stage_common import (
+    FORMALIZER_CONTEXT_MODES,
     build_fdg_form_messages,
     build_fdg_form_statement,
     fresh_fdg_stage2_record_state,
@@ -220,3 +221,27 @@ def test_stage2_cli_accepts_formalizer_context_mode() -> None:
     )
 
     assert args.formalizer_context_mode == "c4_problem_cot_full_graph"
+
+
+def test_api_context_prompt_renders_for_all_ablation_modes() -> None:
+    record, fact = _record_and_fact()
+
+    for context_mode in sorted(FORMALIZER_CONTEXT_MODES):
+        messages = build_fdg_form_messages(
+            fact,
+            record=record,
+            context_mode=context_mode,
+            prompt_name="formalize_obligation.api_context",
+        )
+        rendered = "\n\n".join(message["content"] for message in messages)
+
+        assert "theorem test" in rendered
+        assert "[place variables and hypotheses here]" in rendered
+        assert "[place target conclusion here] := by\nsorry" in rendered
+        assert "{lemma_header}" not in rendered
+        assert "prove_f_" not in rendered
+        assert "formalize_obligation.paper_goedel_v2" not in rendered
+        if context_mode == "c4_problem_cot_full_graph":
+            assert "<think>" not in rendered
+            assert "closed secret reasoning" not in rendered
+            assert "unfinished secret reasoning" not in rendered

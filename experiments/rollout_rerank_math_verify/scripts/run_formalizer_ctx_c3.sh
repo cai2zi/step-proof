@@ -13,6 +13,6 @@ bash "${SCRIPT_DIR}/02_step_proof.sh" base \
   "stage1.validation_checks.all_facts_reach_answer=false" \
   "stage2.backend=api" \
   "stage2.api_input_token_limit=16384" \
-  "stage2.formalizer_prompt=formalize_obligation.paper_goedel_v2" \
+  "stage2.formalizer_prompt=formalize_obligation.api_context" \
   "stage2.formalizer_context_mode=c3_problem_full_graph" \
   "$@"
