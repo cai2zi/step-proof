@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - only needed by the API backend.
 from .fdg_graph import FDG_OUTPUT_TRUNCATED_RETRY_HINT
 from .fdg_stage_common import (
     FORM_TERMINAL,
+    FORMALIZER_CONTEXT_MODES,
     build_fdg_form_messages,
     fdg_fact_should_execute,
     fdg_stage2_checkpoint_payload,
@@ -43,7 +44,6 @@ from .llm_worker import LLMWorkerConfig, LLMWorkerPool
 from .runtime_common import (
     append_jsonl,
     extract_last_lean_block,
-    load_done_ids,
     load_jsonl,
     utc_now_iso,
     write_json_atomic,
@@ -374,8 +374,62 @@ class FDGStage2Runner:
             return 1
         return self.args.form_batch_size
 
+    def _current_prompt_meta(self) -> Tuple[str, str]:
+        prompt = str(
+            getattr(self.args, "formalizer_prompt", "formalize_obligation")
+            or "formalize_obligation"
+        )
+        context_mode = str(
+            getattr(self.args, "formalizer_context_mode", "c0_parent") or "c0_parent"
+        )
+        return prompt, context_mode
+
+    def _validate_existing_prompt_meta(
+        self,
+        meta: Dict[str, Any],
+        *,
+        record_id: str,
+        source: str,
+    ) -> None:
+        prompt, context_mode = self._current_prompt_meta()
+        existing_prompt = str(meta.get("formalizer_prompt") or "")
+        if existing_prompt and existing_prompt != prompt:
+            raise RuntimeError(
+                f"Record {record_id} {source} was created with "
+                f"formalizer_prompt={existing_prompt!r}, but current config uses {prompt!r}. "
+                "Use a new exp.name or disable resume."
+            )
+        existing_context_mode = str(meta.get("formalizer_context_mode") or "")
+        if existing_context_mode:
+            if existing_context_mode != context_mode:
+                raise RuntimeError(
+                    f"Record {record_id} {source} was created with "
+                    f"formalizer_context_mode={existing_context_mode!r}, but current config uses "
+                    f"{context_mode!r}. Use a new exp.name or disable resume."
+                )
+        elif context_mode != "c0_parent":
+            raise RuntimeError(
+                f"Record {record_id} {source} has no formalizer_context_mode metadata and is only "
+                "compatible with c0_parent. Use a new exp.name or disable resume."
+            )
+
+    def _load_done_ids_checked(self) -> set[str]:
+        done_ids: set[str] = set()
+        for row in load_jsonl(self.out_path):
+            meta = dict(row.get("meta") or {})
+            record_id = str(meta.get("record_id") or "").strip()
+            if not record_id:
+                continue
+            self._validate_existing_prompt_meta(
+                meta,
+                record_id=record_id,
+                source="completed result",
+            )
+            done_ids.add(record_id)
+        return done_ids
+
     def load_records(self) -> None:
-        self.done_ids = set() if self.args.no_resume else load_done_ids(self.out_path)
+        self.done_ids = set() if self.args.no_resume else self._load_done_ids_checked()
         source_rows = load_jsonl(self.args.infile)
         loaded = resumed_count = partial_count = form_done = empty_skipped = 0
 
@@ -405,14 +459,15 @@ class FDGStage2Runner:
                 record = restore_fdg_stage2_record_state(
                     json.loads(ckpt_path.read_text(encoding="utf-8"))
                 )
+                self._ensure_prompt_meta(record, resumed=True)
                 partial_count += 1
                 for fact in record["facts"].values():
                     if fact["form_status"] in FORM_TERMINAL:
                         form_done += 1
             else:
                 record = fresh_fdg_stage2_record_state(row)
+                self._ensure_prompt_meta(record, resumed=False)
 
-            self._ensure_prompt_meta(record)
             self.records[record_id] = record
             loaded += 1
             if self.args.limit >= 0 and loaded >= self.args.limit:
@@ -424,16 +479,18 @@ class FDGStage2Runner:
         print(f"[resume] Facts already formalized/skipped: {form_done}")
         print(f"[resume] Total pending records to process: {loaded}\n")
 
-    def _ensure_prompt_meta(self, record: Dict[str, Any]) -> None:
-        prompt = str(getattr(self.args, "formalizer_prompt", "formalize_obligation") or "formalize_obligation")
-        existing = str((record.get("meta") or {}).get("formalizer_prompt") or "")
-        if existing and existing != prompt:
-            rid = (record.get("meta") or {}).get("record_id", "<unknown>")
-            raise RuntimeError(
-                f"Record {rid} checkpoint was created with formalizer_prompt={existing!r}, "
-                f"but current config uses {prompt!r}. Use a new exp.name or disable resume."
+    def _ensure_prompt_meta(self, record: Dict[str, Any], *, resumed: bool) -> None:
+        prompt, context_mode = self._current_prompt_meta()
+        meta = record.setdefault("meta", {})
+        record_id = str(meta.get("record_id") or "<unknown>")
+        if resumed:
+            self._validate_existing_prompt_meta(
+                meta,
+                record_id=record_id,
+                source="checkpoint",
             )
-        record.setdefault("meta", {})["formalizer_prompt"] = prompt
+        meta["formalizer_prompt"] = prompt
+        meta["formalizer_context_mode"] = context_mode
 
     def _resolve_formalizer_gpus(self) -> str:
         if self.args.formalizer_gpus:
@@ -655,6 +712,8 @@ class FDGStage2Runner:
                 if not fact["form_messages"]:
                     fact["form_messages"] = build_fdg_form_messages(
                         fact,
+                        record=record,
+                        context_mode=self.args.formalizer_context_mode,
                         prompt_name=self.args.formalizer_prompt,
                     )
                 attempt_num = int(fact.get("form_retries_used", 0)) + 1
@@ -683,6 +742,25 @@ class FDGStage2Runner:
             attempt_num = task["attempt_num"]
             conversation = copy.deepcopy(task["messages"])
             conversation.append({"role": "assistant", "content": generation.get("text") or ""})
+            generation_meta = {
+                key: generation[key]
+                for key in (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "token_counter",
+                    "finish_reason",
+                    "stop_reason",
+                    "api_model",
+                    "api_base_url",
+                    "prompt_token_limit",
+                    "token_limit",
+                    "max_tokens",
+                )
+                if key in generation
+            }
+            generation_meta["prompt_chars"] = sum(
+                len(str(message.get("content") or "")) for message in task["messages"]
+            )
             if result["kind"] == "validated":
                 payload = {
                     "lean_code": result["lean_code"],
@@ -690,6 +768,7 @@ class FDGStage2Runner:
                     "error_msg": [] if result["lean_pass"] else result["error_msg"],
                     "tries": attempt_num,
                     "conversation": conversation,
+                    "generation": generation_meta,
                 }
                 success = bool(result["lean_pass"])
                 retry_error = f"Lean error: {result['error_msg']}"
@@ -700,6 +779,7 @@ class FDGStage2Runner:
                     "error_msg": result["error_msg"],
                     "tries": attempt_num,
                     "conversation": conversation,
+                    "generation": generation_meta,
                 }
                 success = False
                 retry_error = f"Error: {result['error_msg']}"
@@ -944,6 +1024,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--formalizer-prompt",
         default="formalize_obligation",
         help="Formalizer prompt file stem under prompts/{system,user}.",
+    )
+    parser.add_argument(
+        "--formalizer-context-mode",
+        choices=sorted(FORMALIZER_CONTEXT_MODES),
+        default="c0_parent",
+        help="Context supplied to the Stage 2 formalizer.",
     )
     parser.add_argument(
         "--formalizer-retries",

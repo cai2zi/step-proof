@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from typing import Any, Dict, List
 
-from .fdg_graph import FDGDocument, build_proof_obligation_from_fact
+from .fdg_graph import FDGDocument, build_proof_obligation_from_fact, strip_think_blocks
 from .prompt_builder import build_chat_messages
 from .runtime_common import utc_now_iso
 
@@ -14,6 +15,13 @@ RecordState = Dict[str, Any]
 
 FORM_TERMINAL = {"success", "failed", "skipped"}
 PROVE_TERMINAL = {"success", "failed", "skipped"}
+FORMALIZER_CONTEXT_MODES = {
+    "c0_parent",
+    "c1_problem_parent",
+    "c2_problem_prefix",
+    "c3_problem_full_graph",
+    "c4_problem_cot_full_graph",
+}
 
 
 def fdg_empty_formalization(skipped: bool = False) -> JsonDict:
@@ -100,9 +108,133 @@ def _split_lean_header_body(lean_code: str) -> Dict[str, str]:
     }
 
 
+def _formalizer_record_id(record: RecordState) -> str:
+    return str((record.get("meta") or {}).get("record_id") or "<unknown>").strip()
+
+
+def _formalizer_fact_id(fact: FactState) -> str:
+    return str(fact.get("fact_id") or "<unknown>").strip()
+
+
+def _semantic_fact_payload(fact: FactState) -> JsonDict:
+    return {
+        "fact_id": str(fact.get("fact_id") or ""),
+        "text": str(fact.get("text") or ""),
+        "parent_fact_ids": list(fact.get("parent_fact_ids") or []),
+        "origin": str(fact.get("origin") or ""),
+        "is_final_answer": bool(fact.get("is_final_answer", False)),
+    }
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _require_formalizer_record(record: RecordState | None, fact: FactState) -> RecordState:
+    if record is None:
+        raise ValueError(
+            f"Formalizer context for fact {_formalizer_fact_id(fact)} requires the full record."
+        )
+    return record
+
+
+def _formalizer_problem(record: RecordState, fact: FactState) -> str:
+    problem = str((record.get("input") or {}).get("problem") or "").strip()
+    if not problem:
+        raise ValueError(
+            f"Record {_formalizer_record_id(record)} fact {_formalizer_fact_id(fact)} "
+            "requires a non-empty input.problem for the selected formalizer context mode."
+        )
+    return problem
+
+
+def _formalizer_ordered_facts(record: RecordState, fact: FactState) -> List[FactState]:
+    facts = record.get("facts") or {}
+    current_fact_id = _formalizer_fact_id(fact)
+    if current_fact_id not in facts:
+        raise ValueError(
+            f"Record {_formalizer_record_id(record)} does not contain current fact "
+            f"{current_fact_id!r} in its runtime facts."
+        )
+    ordered_ids = _ordered_fact_ids(record)
+    if current_fact_id not in ordered_ids:
+        raise ValueError(
+            f"Record {_formalizer_record_id(record)} fact {current_fact_id} is missing "
+            "from graph.topo_order."
+        )
+    missing_fact_ids = [fact_id for fact_id in facts if fact_id not in ordered_ids]
+    if missing_fact_ids:
+        raise ValueError(
+            f"Record {_formalizer_record_id(record)} graph.topo_order is missing runtime facts: "
+            f"{missing_fact_ids}."
+        )
+    return [facts[fact_id] for fact_id in ordered_ids]
+
+
+def build_fdg_form_statement(
+    fact: FactState,
+    *,
+    record: RecordState | None = None,
+    context_mode: str = "c0_parent",
+) -> str:
+    if context_mode not in FORMALIZER_CONTEXT_MODES:
+        raise ValueError(
+            f"Unknown formalizer_context_mode={context_mode!r}; "
+            f"expected one of {sorted(FORMALIZER_CONTEXT_MODES)}."
+        )
+
+    proof_obligation = fact.get("proof_obligation") or {}
+    obligation = str(proof_obligation.get("informal_statement_content", "")).strip()
+    if context_mode == "c0_parent":
+        return obligation
+
+    full_record = _require_formalizer_record(record, fact)
+    problem = _formalizer_problem(full_record, fact)
+    sections = [f"Original problem:\n{problem}"]
+    if context_mode == "c1_problem_parent":
+        sections.append(f"Target proof obligation:\n{obligation}")
+        return "\n\n".join(sections)
+
+    ordered_facts = _formalizer_ordered_facts(full_record, fact)
+    current_fact_id = _formalizer_fact_id(fact)
+    current_index = next(
+        index for index, ordered_fact in enumerate(ordered_facts)
+        if _formalizer_fact_id(ordered_fact) == current_fact_id
+    )
+
+    if context_mode == "c2_problem_prefix":
+        prefix = [_semantic_fact_payload(item) for item in ordered_facts[:current_index]]
+        sections.extend(
+            [
+                f"Graph prefix before current node:\n{_stable_json(prefix)}",
+                f"Current node:\n{_stable_json(_semantic_fact_payload(fact))}",
+            ]
+        )
+    else:
+        if context_mode == "c4_problem_cot_full_graph":
+            raw_cot = str((full_record.get("input") or {}).get("raw_cot") or "")
+            visible_cot = strip_think_blocks(raw_cot)
+            sections.append(
+                "Visible solution or chain of thought:"
+                + (f"\n{visible_cot}" if visible_cot else "")
+            )
+        full_graph = [_semantic_fact_payload(item) for item in ordered_facts]
+        sections.extend(
+            [
+                f"Full graph:\n{_stable_json(full_graph)}",
+                f"Current node id:\n{current_fact_id}",
+            ]
+        )
+
+    sections.append(f"Target proof obligation:\n{obligation}")
+    return "\n\n".join(sections)
+
+
 def build_fdg_form_messages(
     fact: FactState,
     *,
+    record: RecordState | None = None,
+    context_mode: str = "c0_parent",
     prompt_name: str = "formalize_obligation",
 ) -> List[Dict[str, str]]:
     proof_obligation = fact.get("proof_obligation") or {}
@@ -113,7 +245,11 @@ def build_fdg_form_messages(
         prompt_name=prompt_name,
         lemma_header=f"{lemma_keyword} {problem_name}",
         paper_theorem_name="test",
-        informal_statement_content=str(proof_obligation.get("informal_statement_content", "")).strip(),
+        informal_statement_content=build_fdg_form_statement(
+            fact,
+            record=record,
+            context_mode=context_mode,
+        ),
     )
 
 

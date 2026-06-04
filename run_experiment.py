@@ -751,6 +751,8 @@ class ExperimentRunner:
             _cmd_value(cfg.formalizer_retries),
             "--formalizer-prompt",
             _cmd_value(cfg.formalizer_prompt),
+            "--formalizer-context-mode",
+            _cmd_value(_cfg_get(cfg, "formalizer_context_mode", "c0_parent")),
             "--form-batch-size",
             _cmd_value(cfg.form_batch_size),
             "--metrics-out",

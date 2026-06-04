@@ -105,6 +105,7 @@ stage2:
   formalizer_chat_template_kwargs:
     enable_thinking: true
   formalizer_prompt: formalize_obligation.paper_goedel_v2
+  formalizer_context_mode: c0_parent
   formalizer_retries: 3
   form_batch_size: 128
   limit: -1
