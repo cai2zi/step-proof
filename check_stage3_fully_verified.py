@@ -135,7 +135,7 @@ def main() -> None:
     rows = _load_jsonl(args.stage3_jsonl)
     graph_mode = ensure_single_graph_mode(rows, source_name=str(args.stage3_jsonl))
     total_records = len(rows)
-    valid_records = 0
+    valid_records = sum(1 for rec in rows if _record_items(rec))
 
     def compute_stats(exclude_skipped_derived: bool) -> JsonDict:
         passed_ids: List[str] = []
@@ -283,6 +283,12 @@ def main() -> None:
         "valid_records_with_nodes": valid_records,
         "include_skipped_derived": stats_include,
         "exclude_skipped_derived": stats_exclude,
+        "prove_verify_ratio_distribution_top_ids": stats_include[
+            "prove_verify_ratio_distribution_top_ids"
+        ],
+        "prove_verify_ratio_distribution_top5_ids": stats_include[
+            "prove_verify_ratio_distribution_top5_ids"
+        ],
     }
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(
@@ -293,8 +299,9 @@ def main() -> None:
 
     if args.show_ids:
         print(f"prove_verify_ratio_distribution_by_record top{args.top_n_per_bucket} ids:")
+        bucket_ids = stats_include["prove_verify_ratio_distribution_top_ids"]
         for key in _bucket_order():
-            top_ids = prove_bucket_ids[key][: max(args.top_n_per_bucket, 0)]
+            top_ids = bucket_ids[key]
             joined = ", ".join(top_ids) if top_ids else "(none)"
             print(f"  {key}: {joined}")
 

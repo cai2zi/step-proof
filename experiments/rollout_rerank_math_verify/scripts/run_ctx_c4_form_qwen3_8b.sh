@@ -34,6 +34,7 @@ STEP_PROOF_OVERRIDES=(
   "stage2.formalizer_prompt=formalize_obligation.api_context"
   "stage2.formalizer_context_mode=c4_problem_cot_full_graph"
   "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Qwen3-8B"
+  "stage3.prover_instances=4"
 )
 
 EVAL_OVERRIDES=(

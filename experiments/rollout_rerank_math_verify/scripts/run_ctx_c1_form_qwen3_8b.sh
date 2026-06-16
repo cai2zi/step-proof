@@ -33,8 +33,7 @@ STEP_PROOF_OVERRIDES=(
   "stage2.formalizer_parallel_startup=true"
   "stage2.formalizer_prompt=formalize_obligation.api_context"
   "stage2.formalizer_context_mode=c1_problem_parent"
-  "stage2.formalizer_model_path=/root/czx/models/Qwen3-8B"
-  "stage3.prover_model_path=/root/czx/models/Goedel-Prover-V2-8B"
+  "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Qwen3-8B"
   "stage3.prover_instances=4"
 )
 
