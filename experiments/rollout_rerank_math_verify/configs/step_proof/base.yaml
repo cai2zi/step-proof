@@ -94,8 +94,8 @@ stage2:
   formalizer_startup_stagger_seconds: 0
   formalizer_startup_timeout: 1800
   formalizer_tensor_parallel_size: 1
-  formalizer_max_tokens: 8192
-  formalizer_token_limit: 32768
+  formalizer_max_tokens: 4096
+  formalizer_token_limit: 16384
   formalizer_temperature: 0.0
   formalizer_top_p: 1.0
   formalizer_presence_penalty: 0.0

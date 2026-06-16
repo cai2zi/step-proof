@@ -21,26 +21,20 @@ ROLLOUT_OVERRIDES=(
 
 STEP_PROOF_OVERRIDES=(
   "rollout_name=qwen3_8b_except_gsm8k"
-  "name=ctx_c1_form_qwen3_8b"
+  "name=ctx_c0_form_api"
   "run.stages=[stage1,stage2,stage3,stats]"
   "stage1.reuse_from_step_proof=full_100"
   "stage1.reuse_require_all=true"
   "stage1.fdg_prompt=fdg_full_graph"
   "stage1.validation_checks.all_facts_reach_answer=false"
-  "stage2.backend=vllm"
-  "stage2.formalizer_instances=4"
-  "stage2.formalizer_tensor_parallel_size=1"
-  "stage2.formalizer_parallel_startup=true"
+  "stage2.backend=api"
   "stage2.formalizer_prompt=formalize_obligation.api_context"
-  "stage2.formalizer_context_mode=c1_problem_parent"
-  "stage2.formalizer_model_path=/root/czx/models/Qwen3-8B"
-  "stage3.prover_model_path=/root/czx/models/Goedel-Prover-V2-8B"
-  "stage3.prover_instances=4"
+  "stage2.formalizer_context_mode=c0_parent"
 )
 
 EVAL_OVERRIDES=(
   "rollout_name=qwen3_8b_except_gsm8k"
-  "step_proof_name=ctx_c1_form_qwen3_8b"
+  "step_proof_name=ctx_c0_form_api"
 )
 
 run_pipeline "${CONFIG_NAME}" "$@"
