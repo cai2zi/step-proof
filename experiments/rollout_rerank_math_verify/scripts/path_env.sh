@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #d:\program\env\python\envs\graph
-export CZX_ROOT="${CZX_ROOT:-/data/run01/scyb202/czx}"
-export LEAN4_PYTHON="${LEAN4_PYTHON:-/data/home/scyb202/.conda/envs/lean4-czx/bin/python}"
+export CZX_ROOT="${CZX_ROOT:-/data/czx}"
+export LEAN4_PYTHON="${LEAN4_PYTHON:-/opt/anaconda3/envs/lean4-czx/bin/python}"
 export PYTHON="${PYTHON:-${LEAN4_PYTHON}}"
 export EVAL_PYTHON="${EVAL_PYTHON:-${LEAN4_PYTHON}}"
 
