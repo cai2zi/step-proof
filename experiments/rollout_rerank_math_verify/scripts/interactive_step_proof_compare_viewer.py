@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import math
@@ -49,6 +50,13 @@ REQUIRED_FILES = [
     "summary/metrics.json",
     "step_proof_results/result_stage3/stage3_results.jsonl",
 ]
+SOURCE_SUMMARY_CACHE_VERSION = 1
+SOURCE_SUMMARY_INPUT_FILES = [
+    "scores.jsonl",
+    "math_verify/all_rollouts_eval.jsonl",
+    "math_verify/step_proof_best_eval.jsonl",
+    "summary/metrics.json",
+]
 
 
 def _load_jsonl(path: Path) -> List[JsonDict]:
@@ -58,6 +66,18 @@ def _load_jsonl(path: Path) -> List[JsonDict]:
 
 def _read_json(path: Path) -> JsonDict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _stable_digest(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _write_json_atomic(path: Path, value: JsonDict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _to_bool_correct(value: Any) -> bool:
@@ -327,12 +347,15 @@ class StepProofCompareApp:
         self.graph_only = graph_only
         self.cache_dir = output_root() / "_viewer_cache" / "step_proof_compare_html"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.source_summary_cache_dir = output_root() / "_viewer_cache" / "step_proof_compare_source_summary"
+        self.source_summary_cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_lock = threading.Lock()
         self._status_cache: Optional[List[ExperimentStatus]] = None
         self._data_cache: Dict[str, ExperimentData] = {}
         self._stage1_cache: Dict[str, Dict[str, JsonDict]] = {}
         self._stage2_cache: Dict[str, Dict[str, JsonDict]] = {}
         self._stage3_cache: Dict[str, Dict[str, JsonDict]] = {}
+        self._source_summary_cache: Dict[str, JsonDict] = {}
 
     def scan_experiments(self) -> List[ExperimentStatus]:
         if self._status_cache is not None:
@@ -531,6 +554,88 @@ class StepProofCompareApp:
     def _default_sources(self, sources: Iterable[str]) -> List[str]:
         return [source for source in sources if "gsm8k" not in source.lower()]
 
+    def _normalize_source_key(self, sources: Iterable[str]) -> List[str]:
+        return sorted({str(source).strip() for source in sources if str(source).strip()})
+
+    def _source_summary_cache_key(self, sources: Iterable[str]) -> str:
+        identity = {
+            "version": SOURCE_SUMMARY_CACHE_VERSION,
+            "root": str(self.results_root),
+            "sources": self._normalize_source_key(sources),
+        }
+        return _stable_digest(identity)
+
+    def _source_summary_cache_path(self, cache_key: str) -> Path:
+        return self.source_summary_cache_dir / f"{cache_key}.json"
+
+    def _relative_path_text(self, path: Path) -> str:
+        try:
+            rel = path.relative_to(self.results_root)
+        except ValueError:
+            rel = path
+        return rel.as_posix()
+
+    def _file_fingerprint(self, path: Path) -> JsonDict:
+        try:
+            stat = path.stat()
+        except OSError:
+            return {
+                "path": self._relative_path_text(path),
+                "exists": False,
+            }
+        return {
+            "path": self._relative_path_text(path),
+            "exists": True,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+    def _source_summary_fingerprint(self, statuses: Iterable[ExperimentStatus]) -> JsonDict:
+        experiments: List[JsonDict] = []
+        for status in statuses:
+            exp_dir = status.path
+            paths = [exp_dir / rel for rel in SOURCE_SUMMARY_INPUT_FILES]
+            math_verify_dir = exp_dir / "math_verify"
+            if math_verify_dir.is_dir():
+                paths.extend(sorted(math_verify_dir.glob("random_seed_*_eval.jsonl")))
+            experiments.append(
+                {
+                    "name": status.name,
+                    "complete": status.complete,
+                    "missing": list(status.missing),
+                    "files": [self._file_fingerprint(path) for path in paths],
+                }
+            )
+        return {
+            "version": SOURCE_SUMMARY_CACHE_VERSION,
+            "root": str(self.results_root),
+            "experiments": experiments,
+        }
+
+    def _read_source_summary_cache(self, cache_key: str, fingerprint: JsonDict) -> Optional[JsonDict]:
+        cached = self._source_summary_cache.get(cache_key)
+        if cached and cached.get("fingerprint") == fingerprint and isinstance(cached.get("payload"), dict):
+            return cached["payload"]
+
+        path = self._source_summary_cache_path(cache_key)
+        try:
+            disk_cached = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if disk_cached.get("fingerprint") != fingerprint or not isinstance(disk_cached.get("payload"), dict):
+            return None
+        self._source_summary_cache[cache_key] = disk_cached
+        return disk_cached["payload"]
+
+    def _write_source_summary_cache(self, cache_key: str, fingerprint: JsonDict, payload: JsonDict) -> None:
+        entry = {
+            "fingerprint": fingerprint,
+            "payload": payload,
+        }
+        with self._cache_lock:
+            _write_json_atomic(self._source_summary_cache_path(cache_key), entry)
+            self._source_summary_cache[cache_key] = entry
+
     def _source_for_row(self, data: ExperimentData, row: JsonDict) -> str:
         source = str(row.get("source") or "").strip()
         if source:
@@ -615,23 +720,32 @@ class StepProofCompareApp:
 
     def source_summary_payload(self, sources: Iterable[str]) -> JsonDict:
         statuses = self.scan_experiments()
+        requested_sources = self._normalize_source_key(sources)
+        cache_key = self._source_summary_cache_key(requested_sources)
+        fingerprint = self._source_summary_fingerprint(statuses)
+        cached = self._read_source_summary_cache(cache_key, fingerprint)
+        if cached is not None:
+            return cached
+
         available_sources = self._available_sources_from_metrics(statuses)
         if not available_sources:
             available_sources = self._available_sources_from_data()
-        selected_sources = [source for source in sources if not available_sources or source in available_sources]
+        selected_sources = [source for source in requested_sources if not available_sources or source in available_sources]
         experiments: List[JsonDict] = []
         for status in statuses:
             payload = status.to_payload()
             if status.complete:
                 payload["summary"] = self._source_summary(status.name, selected_sources)
             experiments.append(payload)
-        return {
+        payload = {
             "root": str(self.results_root),
             "sources": available_sources,
             "selected_sources": selected_sources,
             "experiments": experiments,
             "complete_names": [status.name for status in statuses if status.complete],
         }
+        self._write_source_summary_cache(cache_key, fingerprint, payload)
+        return payload
 
     def _selected_info(self, data: ExperimentData, parent_id: str) -> JsonDict:
         selected = data.selected_eval_by_parent.get(parent_id) or {}
