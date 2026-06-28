@@ -722,7 +722,7 @@ class LocalLeanLspWorker:
 
     async def _job_completion_fallback(self) -> None:
         try:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(1.0)
             self._maybe_finish_job(force=True)
         except asyncio.CancelledError:
             raise
@@ -730,7 +730,7 @@ class LocalLeanLspWorker:
     def _maybe_finish_job(self, force: bool = False) -> None:
         if self._job_future is None or self._job_future.done() or not self._job_seen_diagnostics:
             return
-        if force or not self._job_seen_progress or not self._job_processing:
+        if force or (self._job_seen_progress and not self._job_processing):
             self._job_future.set_result(self._job_diagnostics)
 
     def _fail_pending(self, exc: Exception) -> None:
