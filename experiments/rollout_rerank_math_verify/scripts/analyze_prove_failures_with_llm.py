@@ -664,15 +664,25 @@ def build_messages(payload: JsonDict) -> list[JsonDict]:
     system = (
         "你是 Lean 4 / Mathlib / 数学证明调试助手。"
         "你的任务是分析已经 formalization 成功、但 prover 失败的 DAG 节点。"
+        "formalization 阶段的 Lean 定理通常故意以 by sorry 作为占位，"
+        "这只表示陈述已通过类型检查并等待 prover 填证明；不要把 by sorry 本身当作失败原因。"
         "请用中文自然语言回答，重点解释失败原因，不要编造未给出的运行结果。"
     )
     user = (
         "下面是一个 rollout 的 DAG 证明结果。failed_nodes 中的每个节点都满足："
         "form_status=success 且 formalization.lean_pass=true，但 prove 阶段失败或 lean_verify=false。\n\n"
         "请对 failed_nodes 里的每个节点逐一分析为什么出错。"
+        "注意：formalization.lean_code 中出现 sorry 是正常占位，不是错误证据；"
+        "请分析 prover 为什么无法把这个已类型检查通过的陈述证明出来，"
+        "例如陈述缺少假设、父节点语义不足、Lean 定理过强、prover 生成了无效代码、"
+        "prove 阶段输出为空/被截断，或 Lean 报错等。"
+        "如果 prove 输出被截断，请进一步检查已给出的输出内容是否在重复某个句子、段落、证明计划或代码片段；"
+        "若存在明显重复，不要只写“截断”，还要分析重复反映的原因，"
+        "例如模型陷入循环、证明计划无法推进、缺少关键引理/假设导致反复改写同一思路，或生成格式失控。"
         "回答请使用 JSON，顶层字段为 record_id 和 node_reasons。"
         "node_reasons 是数组，每项包含 fact_id、reason_zh、evidence、likely_category。"
-        "reason_zh 必须是中文自然语言；evidence 引用 Lean 错误、节点文本、父节点或 formalization 的具体证据。"
+        "reason_zh 必须是中文自然语言；evidence 引用 prove 阶段 Lean 错误、solved_lemma、节点文本、父节点或 formalization 陈述本身的具体证据，"
+        "但不要把 formalization 中的 by sorry 作为失败证据。"
         "likely_category 可从以下类别中选：formal_statement_too_strong, missing_or_wrong_hypothesis, "
         "bad_parent_context, theorem_false_or_underspecified, prover_generated_invalid_code, "
         "prover_empty_or_truncated_output, lean_tactic_or_type_error, upstream_graph_issue, other。\n\n"
@@ -920,4 +930,4 @@ if __name__ == "__main__":
 #     --sampled-rollout-name qwen3_8b_except_gsm8k_sampled_ctx_c0_form_api_seed0 \
 #     --rollout-id-column id
 
-# python step-proof/experiments/rollout_rerank_math_verify/scripts/analyze_prove_failures_with_llm.py D:/program/research ctx_c0_form_api --sample-mode stratified-random --samples-per-bucket 4 --seed 0 --export-sampled-rollout --source-rollout-name qwen3_8b_except_gsm8k --sampled-rollout-name qwen3_8b_except_gsm8k_sampled_ctx_c0_form_api_seed0 --rollout-id-column id
+# python step-proof/experiments/rollout_rerank_math_verify/scripts/analyze_prove_failures_with_llm.py D:/program/research ctx_c0_form_api --sample-mode stratified-random --samples-per-bucket 4 --seed 0 --export-sampled-rollout --source-rollout-name qwen3_8b_except_gsm8k --sampled-rollout-name qwen3_8b_except_gsm8k_sampled_ctx_c0_form_api_seed0 --rollout-id-column id --api-key sk-VHbFrN2gTc5nepAIdrKAqsKf3nZ3i4B5pOMcnS2Pl0YOGn9a
