@@ -12,7 +12,7 @@ PIPELINE_OVERRIDES=(
   "rollout_config=base"
   "step_proof_config=base"
   "eval_config=base"
-  "gpus=0,1,2,3"
+  "gpus=0,1"
 )
 
 ROLLOUT_OVERRIDES=(
@@ -21,23 +21,25 @@ ROLLOUT_OVERRIDES=(
 
 STEP_PROOF_OVERRIDES=(
   "rollout_name=qwen3_8b_except_gsm8k"
-  "name=ctx_c0_form_api"
+  "name=ctx_c1_form_goedel_32b"
   "run.stages=[stage1,stage2,stage3,stats]"
   "stage1.reuse_from_step_proof=full_100"
   "stage1.reuse_require_all=true"
   "stage1.fdg_prompt=fdg_full_graph"
   "stage1.validation_checks.all_facts_reach_answer=false"
-  "stage2.backend=api"
+  "stage2.backend=vllm"
+  "stage2.formalizer_instances=2"
+  "stage2.formalizer_tensor_parallel_size=1"
+  "stage2.formalizer_parallel_startup=true"
   "stage2.formalizer_prompt=formalize_obligation.api_context"
-  "stage2.formalizer_context_mode=c0_parent"
-
-  "stage2.formalizer_instances=4"
-  "stage3.prover_instances=4"
+  "stage2.formalizer_context_mode=c1_problem_parent"
+  "stage2.formalizer_model_path=\${oc.env:CZX_ROOT}/models/Goedel-Formalizer-V2-32B"
+  "stage3.prover_instances=2"
 )
 
 EVAL_OVERRIDES=(
-  "rollout_name=qwen3_8b_except_gsm8k"
-  "step_proof_name=ctx_c0_form_api"
+  "rollout_name=ctx_c1_form_goedel_32b"
+  "step_proof_name=ctx_c1_form_qwen3_8b"
 )
 
 run_pipeline "${CONFIG_NAME}" "$@"

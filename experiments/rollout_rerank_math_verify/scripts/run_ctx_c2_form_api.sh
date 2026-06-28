@@ -22,7 +22,7 @@ ROLLOUT_OVERRIDES=(
 STEP_PROOF_OVERRIDES=(
   "rollout_name=qwen3_8b_except_gsm8k"
   "name=ctx_c2_form_api"
-  "run.stages=[stage1,stage2]"
+  "run.stages=[stage1,stage2,stage3,stats]"
   "stage1.reuse_from_step_proof=full_100"
   "stage1.reuse_require_all=true"
   "stage1.fdg_prompt=fdg_full_graph"
@@ -30,6 +30,10 @@ STEP_PROOF_OVERRIDES=(
   "stage2.backend=api"
   "stage2.formalizer_prompt=formalize_obligation.api_context"
   "stage2.formalizer_context_mode=c2_problem_prefix"
+
+
+  "stage2.formalizer_instances=4"
+  "stage3.prover_instances=4"
 )
 
 EVAL_OVERRIDES=(

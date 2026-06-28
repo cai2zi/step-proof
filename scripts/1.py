@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -24,20 +23,6 @@ TARGET_FIELDS = (
     "global_prove_verified_nodes_ratio",
     "global_form_verified_nodes_ratio",
 )
-
-
-CTX_EXP_PATTERN = re.compile(
-    r"^step_proof_ctx_(c[0-4])_form_(api|goedel_8b|goedel_32b|qwen3_8b|qwen3_32b)$"
-)
-
-FULL_EXP_PATTERN = re.compile(
-    r"^step_proof_full_([01])([01])([01])$"
-)
-
-FULL_MODEL_MAP = {
-    "0": "goedel_8b",
-    "1": "goedel_32b",
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Fail if any experiment is missing the stats file, target fields, or has an unknown name format.",
+        help="Fail if any experiment is missing the stats file or target fields.",
     )
     return parser.parse_args()
 
@@ -81,58 +66,7 @@ def iter_experiment_dirs(root: Path) -> Iterable[Path]:
             yield child
 
 
-def parse_experiment_meta(exp_name: str, strict: bool) -> Dict[str, str] | None:
-    """
-    Return {"ctx": ..., "model": ...} for supported experiment names.
-
-    Supported:
-    - step_proof_ctx_c0_form_api
-    - step_proof_ctx_c1_form_goedel_32b
-    - step_proof_ctx_c2_form_qwen3_8b
-    - step_proof_full_100
-    - step_proof_full_110
-
-    For step_proof_full_***:
-    - ctx is always c0
-    - first digit must be 1; if first digit is 0, discard
-    - second digit maps to model:
-        0 -> goedel_8b
-        1 -> goedel_32b
-    """
-
-    ctx_match = CTX_EXP_PATTERN.match(exp_name)
-    if ctx_match:
-        ctx, model = ctx_match.groups()
-        return {
-            "ctx": ctx,
-            "model": model,
-        }
-
-    full_match = FULL_EXP_PATTERN.match(exp_name)
-    if full_match:
-        first_digit, second_digit, _third_digit = full_match.groups()
-
-        # Drop full_*** experiments whose first digit is 0.
-        if first_digit == "0":
-            return None
-
-        return {
-            "ctx": "c0",
-            "model": FULL_MODEL_MAP[second_digit],
-        }
-
-    message = f"[skip] unknown experiment name format: {exp_name}"
-    if strict:
-        raise ValueError(message)
-    print(message)
-    return None
-
-
 def read_ratio_row(exp_dir: Path, strict: bool) -> Dict[str, Any] | None:
-    meta = parse_experiment_meta(exp_dir.name, strict=strict)
-    if meta is None:
-        return None
-
     stats_path = exp_dir / STATS_REL_PATH
     if not stats_path.exists():
         message = f"[skip] missing stats file: {stats_path}"
@@ -150,12 +84,7 @@ def read_ratio_row(exp_dir: Path, strict: bool) -> Dict[str, Any] | None:
         print(message)
         return None
 
-    row: Dict[str, Any] = {
-        "experiment": exp_dir.name,
-        "ctx": meta["ctx"],
-        "model": meta["model"],
-    }
-
+    row: Dict[str, Any] = {"experiment": exp_dir.name}
     missing_fields: List[str] = []
     for field in TARGET_FIELDS:
         if field not in section:
@@ -184,19 +113,13 @@ def main() -> None:
 
     rows = [
         row
-        for row in (
-            read_ratio_row(exp_dir, strict=args.strict)
-            for exp_dir in iter_experiment_dirs(root)
-        )
+        for row in (read_ratio_row(exp_dir, strict=args.strict) for exp_dir in iter_experiment_dirs(root))
         if row is not None
     ]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with open(output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["experiment", "ctx", "model", *TARGET_FIELDS],
-        )
+        writer = csv.DictWriter(f, fieldnames=["experiment", *TARGET_FIELDS])
         writer.writeheader()
         writer.writerows(rows)
 
