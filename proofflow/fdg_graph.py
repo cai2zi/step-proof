@@ -61,6 +61,22 @@ def strip_think_blocks(text: str) -> str:
     return re.sub(r"<think\b[^>]*>.*\Z", "", without_closed, flags=re.DOTALL | re.IGNORECASE).strip()
 
 
+def has_unclosed_think_block(text: str) -> bool:
+    without_closed = re.sub(
+        r"<think\b[^>]*>.*?</think>",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return bool(
+        re.search(
+            r"<think\b[^>]*>.*\Z",
+            without_closed,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    )
+
+
 def _extract_json_block(text: str) -> str:
     if "</think>" in text:
         text = text.split("</think>")[-1]

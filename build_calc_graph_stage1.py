@@ -45,6 +45,7 @@ from proofflow.fdg_graph import (
     build_fdg_messages,
     fdg_final_fact_ids,
     fdg_topo_order,
+    has_unclosed_think_block,
     normalize_fdg_validation_checks,
     parse_llm_json,
     parse_and_validate_fdg,
@@ -330,6 +331,8 @@ class PendingRecordSource:
         raw_cot = row[self.args.response_column]
         if _cell_missing(problem) or _cell_missing(raw_cot):
             return None
+        if has_unclosed_think_block(str(raw_cot)):
+            return None
         return record_id, problem, raw_cot
 
     def count_pending(self) -> int:
@@ -355,6 +358,9 @@ class PendingRecordSource:
             problem = row[self.args.question_column]
             raw_cot = row[self.args.response_column]
             if _cell_missing(problem) or _cell_missing(raw_cot):
+                continue
+            if has_unclosed_think_block(str(raw_cot)):
+                self.log(f"  [filter] skip {record_id} (unclosed <think> block)")
                 continue
             messages = build_fdg_messages(
                 problem_text=str(problem),

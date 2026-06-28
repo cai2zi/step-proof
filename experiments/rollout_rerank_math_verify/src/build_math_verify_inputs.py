@@ -7,7 +7,14 @@ import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from common import load_config, math_verify_dir, read_jsonl, step_proof_dir, step_proof_rollout_dir
+from common import (
+    has_unclosed_think_block,
+    load_config,
+    math_verify_dir,
+    read_jsonl,
+    step_proof_dir,
+    step_proof_rollout_dir,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,9 +53,13 @@ def main() -> None:
     selected = list(read_jsonl(step_proof_dir(cfg) / "selected_step_proof.jsonl"))
 
     all_rollout_rows: List[Dict[str, Any]] = []
+    skipped_unclosed_think = 0
     for rec in rollout_raw:
         for rollout_id, response in _rollout_responses(rec):
             if response is None or not str(response).strip():
+                continue
+            if has_unclosed_think_block(response):
+                skipped_unclosed_think += 1
                 continue
             all_rollout_rows.append(
                 {
@@ -89,6 +100,7 @@ def main() -> None:
         )
     _write_jsonl(out_dir / "step_proof_best.jsonl", step_rows)
     print(f"[done] Math-Verify inputs -> {out_dir}")
+    print(f"[done] skipped unclosed <think> rollout response(s): {skipped_unclosed_think}")
 
 
 if __name__ == "__main__":

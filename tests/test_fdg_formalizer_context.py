@@ -12,6 +12,7 @@ from proofflow.fdg_stage_common import (
     build_fdg_form_statement,
     fresh_fdg_stage2_record_state,
 )
+from proofflow.fdg_graph import has_unclosed_think_block
 from proofflow.prompt_builder import build_chat_messages
 
 
@@ -245,3 +246,9 @@ def test_api_context_prompt_renders_for_all_ablation_modes() -> None:
             assert "<think>" not in rendered
             assert "closed secret reasoning" not in rendered
             assert "unfinished secret reasoning" not in rendered
+
+
+def test_unclosed_think_detection_ignores_closed_blocks() -> None:
+    assert has_unclosed_think_block("<think>hidden</think>\nVisible solution") is False
+    assert has_unclosed_think_block("<think>\nunfinished hidden reasoning") is True
+    assert has_unclosed_think_block("Visible\n<think>closed</think>\n<think>unfinished") is True

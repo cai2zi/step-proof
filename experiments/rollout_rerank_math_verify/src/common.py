@@ -136,6 +136,23 @@ def write_jsonl(path: str | Path, records: Iterable[Dict[str, Any]]) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def has_unclosed_think_block(text: Any) -> bool:
+    value = "" if text is None else str(text)
+    without_closed = re.sub(
+        r"<think\b[^>]*>.*?</think>",
+        "",
+        value,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return bool(
+        re.search(
+            r"<think\b[^>]*>.*\Z",
+            without_closed,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    )
+
+
 def read_done_ids(path: str | Path) -> set[str]:
     p = Path(path)
     if not p.is_file():
