@@ -246,3 +246,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# python scripts/verify_lean_file.py /data/run01/scyb202/czx/czx_work/TEMP/lean_jobs/1.lean  --repl
