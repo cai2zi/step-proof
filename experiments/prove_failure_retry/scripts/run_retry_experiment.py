@@ -28,6 +28,7 @@ JsonDict = Dict[str, Any]
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
 STEP_PROOF_ROOT = EXPERIMENT_DIR.parents[1]
 PROMPT_ROOT = STEP_PROOF_ROOT / "prompts"
+CLASSIFICATION_CONTEXT_SCHEMA_VERSION = 2
 if str(STEP_PROOF_ROOT) not in sys.path:
     sys.path.insert(0, str(STEP_PROOF_ROOT))
 
@@ -183,6 +184,7 @@ def select_subset(cfg: JsonDict, records: List[JsonDict], math_rows: Dict[str, J
     by_parent: Dict[str, List[JsonDict]] = {}
     record_ids_without_math: List[str] = []
     rejected_unclosed: List[str] = []
+    run_cfg = cfg.get("run") or {}
 
     for record in records:
         rid = record_id_of(record)
@@ -209,13 +211,45 @@ def select_subset(cfg: JsonDict, records: List[JsonDict], math_rows: Dict[str, J
         else:
             eligible_parent_ids.append(parent_id)
 
-    sample_n = int((cfg.get("run") or {}).get("sample_problems", -1))
-    seed = int((cfg.get("run") or {}).get("seed", 0))
+    sample_n = int(run_cfg.get("sample_problems", -1))
+    seed = int(run_cfg.get("seed", 0))
+    sample_mode = str(run_cfg.get("sample_mode", "stratified_random") or "stratified_random").strip().lower()
+    stratify_bucket_step = int(run_cfg.get("stratify_bucket_step", 20))
+    stratify_include_skipped = bool(run_cfg.get("stratify_include_skipped_derived", False))
+    samples_per_bucket = int(run_cfg.get("samples_per_bucket", 0))
+    rng = random.Random(seed)
+    problem_bucket: Dict[str, str] = {}
+    problem_bucket_counts: Dict[str, int] = {}
+    selected_problem_bucket_counts: Dict[str, int] = {}
+
+    for parent_id in eligible_parent_ids:
+        ratio = problem_prove_ratio_percent(
+            by_parent[parent_id],
+            include_skipped_derived=stratify_include_skipped,
+        )
+        label = bucket(ratio, step=stratify_bucket_step)
+        problem_bucket[parent_id] = label
+        problem_bucket_counts[label] = problem_bucket_counts.get(label, 0) + 1
+
     if sample_n < 0 or sample_n >= len(eligible_parent_ids):
         selected_parent_ids = eligible_parent_ids
-    else:
-        rng = random.Random(seed)
+    elif sample_mode in {"stratified_random", "stratified-random", "stratified"}:
+        selected_parent_ids = stratified_sample_parent_ids(
+            eligible_parent_ids=eligible_parent_ids,
+            problem_bucket=problem_bucket,
+            sample_n=sample_n,
+            samples_per_bucket=samples_per_bucket,
+            seed=seed,
+            bucket_step=stratify_bucket_step,
+        )
+    elif sample_mode == "random":
         selected_parent_ids = sorted(rng.sample(eligible_parent_ids, sample_n))
+    else:
+        raise ValueError(f"unsupported run.sample_mode: {sample_mode}")
+
+    for parent_id in selected_parent_ids:
+        label = problem_bucket.get(parent_id, "")
+        selected_problem_bucket_counts[label] = selected_problem_bucket_counts.get(label, 0) + 1
 
     selected_records: List[JsonDict] = []
     for parent_id in selected_parent_ids:
@@ -231,8 +265,93 @@ def select_subset(cfg: JsonDict, records: List[JsonDict], math_rows: Dict[str, J
         "rejected_unclosed_think_problem_ids": rejected_unclosed[:50],
         "record_ids_without_math_verify": record_ids_without_math[:50],
         "record_ids_without_math_verify_count": len(record_ids_without_math),
+        "sample_mode": sample_mode,
+        "sample_seed": seed,
+        "sample_problems_requested": sample_n,
+        "stratify_unit": "problem",
+        "stratify_metric": "mean_record_prove_verified_ratio",
+        "stratify_bucket_step": stratify_bucket_step,
+        "stratify_include_skipped_derived": stratify_include_skipped,
+        "samples_per_bucket": samples_per_bucket,
+        "problem_bucket_counts": dict(sorted(problem_bucket_counts.items())),
+        "selected_problem_bucket_counts": dict(sorted(selected_problem_bucket_counts.items())),
+        "selected_problem_buckets": {
+            parent_id: problem_bucket.get(parent_id, "") for parent_id in selected_parent_ids
+        },
     }
     return selected_records, meta
+
+
+def problem_prove_ratio_percent(records: List[JsonDict], include_skipped_derived: bool) -> float:
+    ratios: List[float] = []
+    for record in records:
+        facts = ((record.get("results") or {}).get("facts") or [])
+        facts = [fact for fact in facts if isinstance(fact, dict)]
+        required = [
+            fact
+            for fact in facts
+            if is_required_fact(fact, include_skipped_derived=include_skipped_derived)
+        ]
+        if not required:
+            ratios.append(0.0)
+            continue
+        verified = sum(1 for fact in required if fact_prove_verified(fact))
+        ratios.append((verified / len(required)) * 100.0)
+    return mean(ratios) if ratios else 0.0
+
+
+def bucket_order(step: int) -> List[str]:
+    step = max(1, min(100, int(step)))
+    return [f"{left}-{min(left + step, 100)}%" for left in range(0, 100, step)] + ["100%"]
+
+
+def stratified_sample_parent_ids(
+    *,
+    eligible_parent_ids: List[str],
+    problem_bucket: Dict[str, str],
+    sample_n: int,
+    samples_per_bucket: int,
+    seed: int,
+    bucket_step: int,
+) -> List[str]:
+    rng = random.Random(seed)
+    by_bucket: Dict[str, List[str]] = {}
+    for parent_id in eligible_parent_ids:
+        by_bucket.setdefault(problem_bucket[parent_id], []).append(parent_id)
+    for members in by_bucket.values():
+        members.sort()
+
+    ordered_buckets = [label for label in bucket_order(bucket_step) if by_bucket.get(label)]
+    ordered_buckets.extend(sorted(label for label in by_bucket if label not in set(ordered_buckets)))
+    if not ordered_buckets:
+        return []
+
+    allocations = {label: 0 for label in ordered_buckets}
+    if samples_per_bucket > 0:
+        for label in ordered_buckets:
+            allocations[label] = min(samples_per_bucket, len(by_bucket[label]))
+    else:
+        remaining = min(sample_n, len(eligible_parent_ids))
+        while remaining > 0:
+            progressed = False
+            for label in ordered_buckets:
+                if remaining <= 0:
+                    break
+                if allocations[label] >= len(by_bucket[label]):
+                    continue
+                allocations[label] += 1
+                remaining -= 1
+                progressed = True
+            if not progressed:
+                break
+
+    selected: List[str] = []
+    for label in ordered_buckets:
+        k = allocations[label]
+        if k <= 0:
+            continue
+        selected.extend(rng.sample(by_bucket[label], k))
+    return sorted(selected)
 
 
 def fact_origin(fact: JsonDict) -> str:
@@ -458,6 +577,8 @@ def failed_nodes_for_classification(records: List[JsonDict]) -> List[JsonDict]:
         parent_id, rollout_id = split_rollout_id(rid)
         facts = ((record.get("results") or {}).get("facts") or [])
         fact_by_id = {str(f.get("fact_id")): f for f in facts if isinstance(f, dict)}
+        input_payload = record.get("input") or {}
+        graph_payload = graph_for_classification(record, fact_by_id)
         for fact in fact_by_id.values():
             if fact_origin(fact) not in {"derived", "answer"}:
                 continue
@@ -484,18 +605,62 @@ def failed_nodes_for_classification(records: List[JsonDict]) -> List[JsonDict]:
                     "fact_id": str(fact.get("fact_id") or ""),
                     "node": compact_fact(fact, include_formalization=True, include_proof=True),
                     "parents": parent_facts,
-                    "graph_context": {
-                        "validation_checks": (record.get("graph") or {}).get("validation_checks")
-                        or (record.get("meta") or {}).get("validation_checks")
-                        or {},
-                        "validation_warnings": (record.get("graph") or {}).get("validation_warnings") or [],
-                        "final_fact_ids": (record.get("graph") or {}).get("final_fact_ids") or [],
-                        "topo_order": (record.get("graph") or {}).get("topo_order") or [],
+                    "input": {
+                        "problem": input_payload.get("problem", ""),
+                        "raw_cot": input_payload.get("raw_cot", ""),
                     },
-                    "problem": (record.get("input") or {}).get("problem", ""),
+                    "graph": graph_payload,
+                    "graph_context": {
+                        "validation_checks": graph_payload.get("validation_checks") or {},
+                        "validation_warnings": graph_payload.get("validation_warnings") or [],
+                        "final_fact_ids": graph_payload.get("final_fact_ids") or [],
+                        "topo_order": graph_payload.get("topo_order") or [],
+                    },
+                    "problem": input_payload.get("problem", ""),
+                    "raw_cot": input_payload.get("raw_cot", ""),
                 }
             )
     return rows
+
+
+def graph_for_classification(record: JsonDict, fact_by_id: Dict[str, JsonDict]) -> JsonDict:
+    graph = record.get("graph") or {}
+    facts: List[JsonDict] = []
+    topo_order = graph.get("topo_order") or list(fact_by_id.keys())
+    seen: set[str] = set()
+    ordered_fact_ids = [str(fid) for fid in topo_order if str(fid) in fact_by_id]
+    ordered_fact_ids.extend(fid for fid in fact_by_id if fid not in set(ordered_fact_ids))
+    for fact_id in ordered_fact_ids:
+        if fact_id in seen:
+            continue
+        seen.add(fact_id)
+        fact = fact_by_id[fact_id]
+        facts.append(
+            {
+                "fact_id": fact_id,
+                "text": fact.get("text", ""),
+                "origin": fact.get("origin", ""),
+                "parent_fact_ids": fact.get("parent_fact_ids") or [],
+                "is_final_answer": bool(fact.get("is_final_answer")),
+                "skip": fact.get("skip", 0),
+            }
+        )
+    return {
+        "facts": facts,
+        "dependencies": [
+            {
+                "fact_id": fact["fact_id"],
+                "parent_fact_ids": fact.get("parent_fact_ids") or [],
+            }
+            for fact in facts
+        ],
+        "topo_order": graph.get("topo_order") or ordered_fact_ids,
+        "final_fact_ids": graph.get("final_fact_ids") or [],
+        "validation_checks": graph.get("validation_checks")
+        or (record.get("meta") or {}).get("validation_checks")
+        or {},
+        "validation_warnings": graph.get("validation_warnings") or [],
+    }
 
 
 def truncate_text(value: Any, max_chars: int = 2400) -> str:
@@ -558,6 +723,21 @@ def compact_fact(fact: JsonDict, include_formalization: bool = False, include_pr
             ),
         }
     return payload
+
+
+def compact_graph_for_prompt(graph: JsonDict, max_fact_text_chars: int = 1200) -> JsonDict:
+    facts = graph.get("facts") or []
+    return {
+        **{key: value for key, value in graph.items() if key != "facts"},
+        "facts": [
+            {
+                **fact,
+                "text": truncate_text(fact.get("text", ""), max_fact_text_chars),
+            }
+            for fact in facts
+            if isinstance(fact, dict)
+        ],
+    }
 
 
 class TextGenerator:
@@ -718,11 +898,16 @@ def make_generator(cfg: JsonDict, section: str, kind: str) -> TextGenerator:
 
 
 def build_classification_messages(item: JsonDict) -> List[JsonDict]:
+    input_payload = item.get("input") or {}
     payload = {
         "record_id": item["record_id"],
         "parent_id": item["parent_id"],
         "rollout_id": item["rollout_id"],
-        "problem": truncate_text(item.get("problem", ""), 2400),
+        "input": {
+            "problem": truncate_text(input_payload.get("problem", item.get("problem", "")), 2400),
+            "raw_cot": truncate_text(input_payload.get("raw_cot", item.get("raw_cot", "")), 12000),
+        },
+        "graph": compact_graph_for_prompt(item.get("graph") or {}),
         "graph_context": item.get("graph_context") or {},
         "node": item["node"],
         "parents": item.get("parents") or [],
@@ -790,7 +975,8 @@ def classify_nodes(cfg: JsonDict, failed_items: List[JsonDict], out_path: Path) 
     existing: Dict[str, JsonDict] = {}
     if resume and not force and out_path.is_file():
         for row in read_jsonl(out_path):
-            existing[node_key(str(row.get("record_id")), str(row.get("fact_id")))] = row
+            if int(row.get("context_schema_version", 0) or 0) == CLASSIFICATION_CONTEXT_SCHEMA_VERSION:
+                existing[node_key(str(row.get("record_id")), str(row.get("fact_id")))] = row
 
     generator = make_generator(cfg, "classification", "classification")
     rows: List[JsonDict] = []
@@ -821,6 +1007,7 @@ def classify_nodes(cfg: JsonDict, failed_items: List[JsonDict], out_path: Path) 
             "parent_id": item["parent_id"],
             "rollout_id": item["rollout_id"],
             "fact_id": item["fact_id"],
+            "context_schema_version": CLASSIFICATION_CONTEXT_SCHEMA_VERSION,
             **parsed,
             "request_payload": item,
             "request_messages": messages,
@@ -941,7 +1128,8 @@ def retry_prover_nodes(
     existing: Dict[str, JsonDict] = {}
     if resume and not force and out_path.is_file():
         for row in read_jsonl(out_path):
-            existing[node_key(str(row.get("record_id")), str(row.get("fact_id")))] = row
+            if int(row.get("context_schema_version", 0) or 0) == CLASSIFICATION_CONTEXT_SCHEMA_VERSION:
+                existing[node_key(str(row.get("record_id")), str(row.get("fact_id")))] = row
 
     retry_targets = [row for row in classifications if row.get("main_issue") == "prover"]
     record_by_id = {record_id_of(record): record for record in records}
@@ -969,6 +1157,7 @@ def retry_prover_nodes(
                     "parent_id": cls["parent_id"],
                     "rollout_id": cls["rollout_id"],
                     "fact_id": cls["fact_id"],
+                    "context_schema_version": CLASSIFICATION_CONTEXT_SCHEMA_VERSION,
                     "success": False,
                     "success_bucket": "failed",
                     "attempts": [],
@@ -1036,6 +1225,7 @@ def retry_prover_nodes(
                 "parent_id": cls["parent_id"],
                 "rollout_id": cls["rollout_id"],
                 "fact_id": cls["fact_id"],
+                "context_schema_version": CLASSIFICATION_CONTEXT_SCHEMA_VERSION,
                 "classification": {
                     "main_issue": cls.get("main_issue"),
                     "secondary_issues": cls.get("secondary_issues") or [],
@@ -1151,6 +1341,7 @@ def main() -> None:
     write_jsonl(selected_dir / "stage3_before.jsonl", selected_records)
     write_jsonl(selected_dir / "all_rollouts_eval.jsonl", selected_math_rows)
     write_json(summary_dir / "selection_meta.json", selection_meta)
+    write_json(selected_dir / "sample_manifest.json", selection_meta)
     print(
         "[prepare] "
         f"selected_problems={selection_meta['selected_problems']} "

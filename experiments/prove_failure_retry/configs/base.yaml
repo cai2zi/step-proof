@@ -12,6 +12,10 @@ run:
   force: false
   seed: 0
   sample_problems: 20
+  sample_mode: stratified_random  # stratified_random | random
+  stratify_bucket_step: 20
+  stratify_include_skipped_derived: false
+  samples_per_bucket: 0  # 0 means distribute sample_problems across non-empty buckets
 
 filter:
   reject_unclosed_think_problem: true
