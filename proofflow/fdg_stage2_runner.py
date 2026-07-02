@@ -59,6 +59,9 @@ DEFAULT_FORMALIZER_GPUS = os.getenv("FORMALIZER_GPUS", "")
 DEFAULT_FORMALIZER_TP = int(os.getenv("FORMALIZER_TP", "2"))
 DEFAULT_MATHLIB_PATH = os.getenv("MATHLIB_PROJECT_PATH", "/data/czx/mathlib4")
 DEFAULT_LEAN_BACKEND = os.getenv("LEAN_BACKEND", "subprocess")
+DEFAULT_LEAN_API_URL = os.getenv("KIMINA_API_URL", os.getenv("LEAN_SERVER_API_URL", "http://localhost:8000"))
+DEFAULT_LEAN_API_KEY_ENV = os.getenv("LEAN_API_KEY_ENV", "KIMINA_API_KEY")
+DEFAULT_LEAN_SERVER_TIMEOUT = int(os.getenv("LEAN_SERVER_TIMEOUT", "300"))
 DEFAULT_API_BASE_URL = os.getenv("FORMALIZER_API_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_API_MODEL = os.getenv("FORMALIZER_API_MODEL", "gpt-4.1")
 DEFAULT_API_KEY_ENV = os.getenv("FORMALIZER_API_KEY_ENV", "OPENAI_API_KEY")
@@ -581,17 +584,27 @@ class FDGStage2Runner:
                 for _ in range(self.args.api_concurrency)
             ]
         if self.lean_server is None:
-            pool_size = (
-                self.args.lean_worker_pool_size
-                if self.args.lean_worker_pool_size > 0
-                else self.args.lean_check_concurrency
-            )
-            self.lean_server = LeanServer(
-                project_path=self.args.mathlib_path or DEFAULT_MATHLIB_PATH,
-                backend=self.args.lean_backend,
-                pool_size=pool_size,
-                temp_root=str(self.args.lean_temp_dir),
-            )
+            if self.args.lean_backend == "kimina_server":
+                self.lean_server = LeanServer(
+                    api_url=self.args.lean_api_url,
+                    backend=self.args.lean_backend,
+                    api_key_env=self.args.lean_api_key_env,
+                    server_timeout=self.args.lean_server_timeout,
+                    server_reuse=self.args.lean_server_reuse,
+                    server_debug=self.args.lean_server_debug,
+                )
+            else:
+                pool_size = (
+                    self.args.lean_worker_pool_size
+                    if self.args.lean_worker_pool_size > 0
+                    else self.args.lean_check_concurrency
+                )
+                self.lean_server = LeanServer(
+                    project_path=self.args.mathlib_path or DEFAULT_MATHLIB_PATH,
+                    backend=self.args.lean_backend,
+                    pool_size=pool_size,
+                    temp_root=str(self.args.lean_temp_dir),
+                )
         else:
             print("[init] fdg stage2 using shared Lean runtime.")
         print("[init] fdg stage2 runtime ready.\n")
@@ -973,7 +986,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lean-backend",
         default=DEFAULT_LEAN_BACKEND,
-        choices=["subprocess", "persistent_lsp"],
+        choices=["subprocess", "persistent_lsp", "kimina_server"],
     )
     parser.add_argument("--lean-check-concurrency", type=int, default=16)
     parser.add_argument("--lean-worker-pool-size", type=int, default=0)
@@ -982,6 +995,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "calc_runs" / "lean_jobs",
     )
+    parser.add_argument("--lean-api-url", default=DEFAULT_LEAN_API_URL)
+    parser.add_argument("--lean-api-key-env", default=DEFAULT_LEAN_API_KEY_ENV)
+    parser.add_argument("--lean-server-timeout", type=int, default=DEFAULT_LEAN_SERVER_TIMEOUT)
+    parser.add_argument("--lean-server-reuse", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lean-server-debug", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--gpus", default=DEFAULT_GPUS)
     parser.add_argument(

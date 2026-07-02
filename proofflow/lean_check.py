@@ -221,6 +221,88 @@ def _analyze_lsp_diagnostics(diagnostics: List[Dict[str, Any]]):
     return lean_pass, lean_verify
 
 
+def _to_plain_dict(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(exclude_none=True)
+    return {
+        name: getattr(value, name)
+        for name in ("id", "error", "response", "diagnostics", "time")
+        if hasattr(value, name)
+    }
+
+
+def _message_severity(message: Dict[str, Any]) -> str:
+    severity = message.get("severity")
+    if isinstance(severity, str):
+        return severity.lower()
+    if severity == 1:
+        return "error"
+    if severity == 2:
+        return "warning"
+    if severity == 3:
+        return "info"
+    return str(severity).lower()
+
+
+def _contains_sorry_marker(payload: Any) -> bool:
+    try:
+        text = json.dumps(payload, ensure_ascii=False).lower()
+    except Exception:
+        text = str(payload).lower()
+    return any(
+        marker in text
+        for marker in (
+            "declaration uses 'sorry'",
+            'declaration uses "sorry"',
+            "declaration uses `sorry`",
+            '"kind":"hassorry"',
+            '"kind": "hassorry"',
+            "has_sorry",
+            "hassorry",
+        )
+    )
+
+
+def _analyze_kimina_repl_response(result: Any):
+    payload = _to_plain_dict(result)
+    error = payload.get("error")
+    if error:
+        return False, False, error
+
+    response = payload.get("response")
+    if response is None:
+        return False, False, payload or "kimina response has no response or error"
+    if not isinstance(response, dict):
+        response = _to_plain_dict(response)
+    if response.get("message"):
+        return False, False, response
+
+    messages = response.get("messages") or []
+    sorries = response.get("sorries") or []
+    lean_pass = not any(
+        isinstance(message, dict) and _message_severity(message) == "error"
+        for message in messages
+    )
+    has_sorry = bool(sorries) or _contains_sorry_marker(response)
+    lean_verify = lean_pass and not has_sorry
+    if lean_verify:
+        return True, True, None
+
+    details: Dict[str, Any] = {}
+    if messages:
+        details["messages"] = messages
+    if sorries:
+        details["sorries"] = sorries
+    if not details:
+        details["response"] = response
+    return lean_pass, lean_verify, details
+
+
 def _build_temp_file_path(
     project_path: str,
     temp_root: str | None = None,
@@ -233,7 +315,13 @@ def _build_temp_file_path(
 
 
 def verify_lean_lemma_server(
-    lean_string: str, client: KiminaClient, add_imports=False, timeout: int = 180
+    lean_string: str,
+    client: KiminaClient,
+    add_imports=False,
+    timeout: int = 180,
+    job_id: str | None = None,
+    reuse: bool = True,
+    debug: bool = False,
 ):
     """
     Verifies a Lean lemma using a remote server API.
@@ -243,43 +331,24 @@ def verify_lean_lemma_server(
         return False, False, "kimina_client is not installed; remote Lean server mode is unavailable."
     full_code = f"{LEAN_LIBRARIES}\n\n{lean_string}" if add_imports else lean_string
 
-    snippets = [
-        Snippet(id=str(idx), code=proof) for idx, proof in enumerate([full_code])
-    ]
-
-    timeout = 60
-    compilation_result: CheckResponse = client.check(
-        snips=snippets,
-        timeout=timeout,
-        max_workers=10,
-    )
+    snippet = Snippet(id=job_id or uuid.uuid4().hex, code=full_code)
+    try:
+        compilation_result: CheckResponse = client.check(
+            snips=[snippet],
+            timeout=timeout,
+            debug=debug,
+            reuse=reuse,
+            batch_size=1,
+            max_workers=1,
+            show_progress=False,
+        )
+    except Exception as exc:
+        return False, False, f"Kimina verification failed with exception: {exc}"
 
     results: list[ReplResponse] = compilation_result.results
-
-    output = str(results[0])
-
-    # Check for errors
-    error_patterns = [
-        r'"severity"\s*:\s*"error"',  # Double quotes with optional spaces
-        r"'severity'\s*:\s*'error'",  # Single quotes with optional spaces
-    ]
-
-    lean_pass = not any(re.search(pattern, output) for pattern in error_patterns)
-
-    # Check for verification (no errors, no sorries, no failures)
-    lean_verify = lean_pass and not any(
-        [
-            "declaration uses 'sorry'" in output,
-            'declaration uses "sorry"' in output,
-            "declaration uses `sorry`" in output,
-            '"kind":"hasSorry"' in output,
-            "failed" in output,
-        ]
-    )
-
-    output = extract_errors(output)
-
-    return lean_pass, lean_verify, output
+    if not results:
+        return False, False, "Kimina response has no results."
+    return _analyze_kimina_repl_response(results[0])
 
 
 def verify_lean_lemma_local(
@@ -915,6 +984,10 @@ class LeanServer:
         backend: str = "subprocess",
         pool_size: int = 1,
         temp_root: str | None = None,
+        api_key_env: str | None = None,
+        server_timeout: int = 300,
+        server_reuse: bool = True,
+        server_debug: bool = False,
     ):
         """
         Initialize the LeanServer in either server or local mode.
@@ -938,9 +1011,28 @@ class LeanServer:
         self.backend = backend
         self.pool_size = max(1, int(pool_size))
         self.temp_root = temp_root
+        self.server_timeout = int(server_timeout)
+        self.server_reuse = bool(server_reuse)
+        self.server_debug = bool(server_debug)
         self.persistent_pool: Optional[LocalLeanLspPool] = None
 
-        if project_path:
+        if self.backend == "kimina_server" or (api_url and not project_path):
+            if api_url is None:
+                api_url = os.getenv("KIMINA_API_URL") or os.getenv("LEAN_SERVER_API_URL") or "http://localhost:8000"
+            if KiminaClient is None:
+                raise RuntimeError(
+                    "kimina_client is not installed; use local Lean mode or install kimina_client."
+                )
+            api_key = os.getenv(api_key_env) if api_key_env else None
+            self.mode = "server"
+            self.path = api_url
+            self.client = KiminaClient(
+                api_url=self.path,
+                api_key=api_key,
+                http_timeout=max(1, self.server_timeout + 30),
+            )
+            print(f"LeanServer initialized in KIMINA SERVER mode: {self.path}")
+        elif project_path:
             # Prioritize local execution if a project path is provided
             self.mode = "local"
             self.path = project_path
@@ -954,17 +1046,6 @@ class LeanServer:
             elif self.backend != "subprocess":
                 raise ValueError(f"Unsupported local Lean backend: {self.backend}")
             print("LeanServer initialized in LOCAL mode.")
-        elif api_url:
-            if KiminaClient is None:
-                raise RuntimeError(
-                    "kimina_client is not installed; use local Lean mode or install kimina_client."
-                )
-            self.mode = "server"
-            self.path = api_url
-            self.client = KiminaClient(
-                api_url=self.path
-            )  # The client is initialized once here
-            print("LeanServer initialized in SERVER mode.")
         else:
             raise ValueError(
                 "You must provide either an 'api_url' for server mode or a 'project_path' for local mode."
@@ -1006,7 +1087,12 @@ class LeanServer:
         """
         if self.mode == "server":
             return verify_lean_lemma_server(
-                lean_string=lean_string, client=self.client, add_imports=add_imports
+                lean_string=lean_string,
+                client=self.client,
+                add_imports=add_imports,
+                timeout=self.server_timeout,
+                reuse=self.server_reuse,
+                debug=self.server_debug,
             )
         elif self.mode == "local":
             return verify_lean_lemma_local(
@@ -1030,6 +1116,10 @@ class LeanServer:
                 lean_string=lean_string,
                 client=self.client,
                 add_imports=add_imports,
+                timeout=self.server_timeout,
+                job_id=job_id,
+                reuse=self.server_reuse,
+                debug=self.server_debug,
             )
         elif self.mode == "local":
             if self.backend == "persistent_lsp":

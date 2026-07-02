@@ -1,0 +1,80 @@
+output_root: ${oc.env:CZX_ROOT}/czx_work/step-proof/prove_failure_retry
+exp_name: ctx_c0_form_api_sample20_seed0
+
+source:
+  exp_dir: ${oc.env:CZX_ROOT}/czx_work/step-proof/rollout_rerank_math_verify/outputs/step_proofs/step_proof_ctx_c0_form_api
+  stage3_jsonl: step_proof_results/result_stage3/stage3_results.jsonl
+  math_verify_all_rollouts_eval: math_verify/all_rollouts_eval.jsonl
+
+run:
+  stages: [prepare, classify, retry, stats]
+  resume: true
+  force: false
+  seed: 0
+  sample_problems: 20
+
+filter:
+  reject_unclosed_think_problem: true
+
+classification:
+  backend: api
+  dry_run: false
+  model: gpt-5-mini
+  api_base_url: https://poloapi.top/v1
+  api_key_env: POLOAI_API_KEY
+  api_key:
+  api_timeout: 300
+  api_max_retries: 3
+  api_retry_sleep: 2.0
+  max_tokens: 4096
+  temperature: 0.0
+  top_p: 1.0
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+  top_k: 20
+  vllm_model_path: ${oc.env:CZX_ROOT}/models/Qwen3-8B
+  tensor_parallel_size: 1
+  gpus: 0,1,2,3
+  dtype: float16
+  gpu_memory_utilization: 0.95
+  token_limit: 32768
+  chat_template_kwargs:
+    enable_thinking: true
+
+retry:
+  backend: api
+  dry_run: false
+  prompt: prove.paper_goedel_v2
+  max_retries: 3
+  max_error_chars: 1200
+  model: gpt-5-mini
+  api_base_url: https://poloapi.top/v1
+  api_key_env: POLOAI_API_KEY
+  api_key:
+  api_timeout: 300
+  api_max_retries: 3
+  api_retry_sleep: 2.0
+  max_tokens: 4096
+  temperature: 0.0
+  top_p: 1.0
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+  top_k: 20
+  vllm_model_path: ${oc.env:CZX_ROOT}/models/Goedel-Prover-V2-8B
+  tensor_parallel_size: 1
+  gpus: 0,1,2,3
+  dtype: float16
+  gpu_memory_utilization: 0.95
+  token_limit: 8192
+  chat_template_kwargs:
+    enable_thinking: true
+
+lean_runtime:
+  lean_api_url: ${oc.env:KIMINA_API_URL,http://localhost:8000}
+  lean_api_key_env: KIMINA_API_KEY
+  lean_server_timeout: 300
+  lean_server_reuse: true
+  lean_server_debug: false
+
+stats:
+  top_n_per_bucket: 10

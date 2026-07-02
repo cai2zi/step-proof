@@ -49,6 +49,11 @@ stage1:
 lean_runtime:
   mathlib_path: ${oc.env:CZX_ROOT}/mathlib4
   lean_backend: persistent_lsp
+  lean_api_url: ${oc.env:KIMINA_API_URL,http://localhost:8000}
+  lean_api_key_env: KIMINA_API_KEY
+  lean_server_timeout: 300
+  lean_server_reuse: true
+  lean_server_debug: false
   lean_check_concurrency: 64
   lean_worker_pool_size: 0
   lean_temp_dir: ${oc.env:CZX_ROOT}/czx_work/TEMP/lean_jobs/${exp.name}

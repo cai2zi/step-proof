@@ -146,34 +146,65 @@ class ExperimentRunner:
 
     def _shared_lean_temp_dir(self) -> Path:
         cfg = self._shared_lean_cfg()
-        if "lean_temp_dir" not in cfg:
-            raise RuntimeError("lean_runtime.lean_temp_dir is required")
-        return _as_path(self.exp_dir, _cmd_value(cfg.lean_temp_dir))
+        value = _cfg_get(cfg, "lean_temp_dir", None)
+        if value is None:
+            return self.exp_dir / "lean_jobs_shared"
+        return _as_path(self.exp_dir, _cmd_value(value))
+
+    def _shared_lean_backend(self) -> str:
+        if "lean_runtime" not in self.cfg:
+            return "subprocess"
+        return str(_cfg_get(self._shared_lean_cfg(), "lean_backend", "subprocess"))
+
+    def _uses_local_lean_temp_dir(self) -> bool:
+        return self._shared_lean_backend() != "kimina_server"
+
+    def _managed_dirs(self) -> List[Path]:
+        paths = [
+            self.logs_dir,
+            self.stage1_dir,
+            self.stage2_dir,
+            self.stage3_dir,
+            self.stats_dir,
+            self.cot_dir,
+            self.viz_dir,
+        ]
+        if self._uses_local_lean_temp_dir():
+            paths.append(self.shared_lean_temp_dir)
+        return paths
 
     def _build_shared_lean_runtime_config(self) -> LeanRuntimeConfig:
         cfg = self._shared_lean_cfg()
         required = [
-            "mathlib_path",
             "lean_backend",
             "lean_check_concurrency",
-            "lean_worker_pool_size",
-            "lean_temp_dir",
         ]
         missing = [name for name in required if name not in cfg]
         if missing:
             raise RuntimeError(f"lean_runtime is missing required fields: {missing}")
-        mathlib_path = _cmd_value(cfg.mathlib_path)
-        if not Path(mathlib_path).is_dir():
+        lean_backend = _cmd_value(cfg.lean_backend)
+        mathlib_path = _cmd_value(_cfg_get(cfg, "mathlib_path", ""))
+        if lean_backend != "kimina_server" and not Path(mathlib_path).is_dir():
             raise RuntimeError(f"lean_runtime.mathlib_path is not a directory: {mathlib_path}")
+        lean_api_url = _cfg_get(cfg, "lean_api_url", "http://localhost:8000")
+        if lean_backend == "kimina_server" and not str(lean_api_url or "").strip():
+            raise RuntimeError("lean_runtime.lean_api_url is required for kimina_server")
         return LeanRuntimeConfig(
             mathlib_path=mathlib_path,
-            lean_backend=_cmd_value(cfg.lean_backend),
+            lean_backend=lean_backend,
             lean_check_concurrency=int(cfg.lean_check_concurrency),
-            lean_worker_pool_size=int(cfg.lean_worker_pool_size),
-            lean_temp_dir=str(self.shared_lean_temp_dir),
+            lean_worker_pool_size=int(_cfg_get(cfg, "lean_worker_pool_size", 0)),
+            lean_temp_dir=str(self.shared_lean_temp_dir) if self._uses_local_lean_temp_dir() else None,
+            lean_api_url=_cmd_value(lean_api_url),
+            lean_api_key_env=_cmd_value(_cfg_get(cfg, "lean_api_key_env", "KIMINA_API_KEY")),
+            lean_server_timeout=int(_cfg_get(cfg, "lean_server_timeout", 300)),
+            lean_server_reuse=bool(_cfg_get(cfg, "lean_server_reuse", True)),
+            lean_server_debug=bool(_cfg_get(cfg, "lean_server_debug", False)),
         )
 
     def _cleanup_shared_lean_temp_dir(self) -> None:
+        if not self._uses_local_lean_temp_dir():
+            return
         path = self.shared_lean_temp_dir
         resolved = path.resolve()
         safe_roots = [
@@ -197,28 +228,10 @@ class ExperimentRunner:
     def prepare(self) -> None:
         self.exp_dir.mkdir(parents=True, exist_ok=True)
         if bool(self.cfg.run.force):
-            for path in (
-                self.logs_dir,
-                self.stage1_dir,
-                self.stage2_dir,
-                self.stage3_dir,
-                self.stats_dir,
-                self.cot_dir,
-                self.viz_dir,
-                self.shared_lean_temp_dir,
-            ):
+            for path in self._managed_dirs():
                 if path.exists():
                     shutil.rmtree(path)
-        for path in (
-            self.logs_dir,
-            self.stage1_dir,
-            self.stage2_dir,
-            self.stage3_dir,
-            self.stats_dir,
-            self.cot_dir,
-            self.viz_dir,
-            self.shared_lean_temp_dir,
-        ):
+        for path in self._managed_dirs():
             path.mkdir(parents=True, exist_ok=True)
         self._write_resolved_config()
         self._write_run_meta(started=True)
@@ -708,6 +721,14 @@ class ExperimentRunner:
             _cmd_value(lean_cfg.lean_worker_pool_size),
             "--lean-temp-dir",
             str(self.shared_lean_temp_dir),
+            "--lean-api-url",
+            _cmd_value(_cfg_get(lean_cfg, "lean_api_url", "http://localhost:8000")),
+            "--lean-api-key-env",
+            _cmd_value(_cfg_get(lean_cfg, "lean_api_key_env", "KIMINA_API_KEY")),
+            "--lean-server-timeout",
+            _cmd_value(_cfg_get(lean_cfg, "lean_server_timeout", 300)),
+            _bool_flag(bool(_cfg_get(lean_cfg, "lean_server_reuse", True)), "lean-server-reuse"),
+            _bool_flag(bool(_cfg_get(lean_cfg, "lean_server_debug", False)), "lean-server-debug"),
             "--backend",
             _cmd_value(_cfg_get(cfg, "backend", "vllm")),
             "--gpus",
@@ -807,6 +828,14 @@ class ExperimentRunner:
             _cmd_value(lean_cfg.lean_worker_pool_size),
             "--lean-temp-dir",
             str(self.shared_lean_temp_dir),
+            "--lean-api-url",
+            _cmd_value(_cfg_get(lean_cfg, "lean_api_url", "http://localhost:8000")),
+            "--lean-api-key-env",
+            _cmd_value(_cfg_get(lean_cfg, "lean_api_key_env", "KIMINA_API_KEY")),
+            "--lean-server-timeout",
+            _cmd_value(_cfg_get(lean_cfg, "lean_server_timeout", 300)),
+            _bool_flag(bool(_cfg_get(lean_cfg, "lean_server_reuse", True)), "lean-server-reuse"),
+            _bool_flag(bool(_cfg_get(lean_cfg, "lean_server_debug", False)), "lean-server-debug"),
             "--gpus",
             _cmd_value(cfg.gpus),
             "--dtype",
@@ -863,7 +892,7 @@ class ExperimentRunner:
     def _build_stage2_runner(self, args: argparse.Namespace, runtime: ExperimentLeanRuntime):
         if not args.infile.is_file():
             raise RuntimeError(f"--infile not found: {args.infile}")
-        if not Path(args.mathlib_path).is_dir():
+        if args.lean_backend != "kimina_server" and not Path(args.mathlib_path).is_dir():
             raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
         ensure_fdg_jsonl(args.infile)
         return FDGStage2Runner(args, lean_server=runtime.lean_server, owned_lean_server=False)
@@ -871,7 +900,7 @@ class ExperimentRunner:
     def _build_stage3_runner(self, args: argparse.Namespace, runtime: ExperimentLeanRuntime):
         if not args.infile.is_file():
             raise RuntimeError(f"--infile not found: {args.infile}")
-        if not Path(args.mathlib_path).is_dir():
+        if args.lean_backend != "kimina_server" and not Path(args.mathlib_path).is_dir():
             raise RuntimeError(f"--mathlib-path is not a directory: {args.mathlib_path}")
         ensure_fdg_jsonl(args.infile)
         return FDGStage3Runner(args, lean_server=runtime.lean_server, owned_lean_server=False)
